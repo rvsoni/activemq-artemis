@@ -376,7 +376,8 @@ public class PostOfficeImpl implements PostOffice, NotificationListener, Binding
                   filterStrings.remove(filterString);
                }
 
-               if (info.getNumberOfConsumers() == 0) {
+               // The consumer count should never be < 0 but we should catch here just in case.
+               if (info.getNumberOfConsumers() <= 0) {
                   if (!props.containsProperty(ManagementHelper.HDR_DISTANCE)) {
                      logger.debug("PostOffice notification / CONSUMER_CLOSED: HDR_DISTANCE not defined");
                      return;
@@ -466,7 +467,8 @@ public class PostOfficeImpl implements PostOffice, NotificationListener, Binding
                                    RoutingType routingType,
                                    Integer maxConsumers,
                                    Boolean purgeOnNoConsumers,
-                                   Boolean exclusive) throws Exception {
+                                   Boolean exclusive,
+                                   SimpleString user) throws Exception {
       synchronized (addressLock) {
          final QueueBinding queueBinding = (QueueBinding) addressManager.getBinding(name);
          if (queueBinding == null) {
@@ -509,6 +511,15 @@ public class PostOfficeImpl implements PostOffice, NotificationListener, Binding
          if (exclusive != null && queue.isExclusive() != exclusive.booleanValue()) {
             changed = true;
             queue.setExclusive(exclusive);
+         }
+         if (logger.isDebugEnabled()) {
+            if (user == null && queue.getUser() != null) {
+               logger.debug("Ignoring updating Queue to a NULL user");
+            }
+         }
+         if (user != null && !user.equals(queue.getUser())) {
+            changed = true;
+            queue.setUser(user);
          }
 
          if (changed) {
@@ -970,7 +981,6 @@ public class PostOfficeImpl implements PostOffice, NotificationListener, Binding
    public Pair<RoutingContext, Message> redistribute(final Message message,
                                                      final Queue originatingQueue,
                                                      final Transaction tx) throws Exception {
-
       Bindings bindings = addressManager.getBindingsForRoutingAddress(originatingQueue.getAddress());
 
       if (bindings != null && bindings.allowRedistribute()) {
@@ -978,6 +988,8 @@ public class PostOfficeImpl implements PostOffice, NotificationListener, Binding
          // arrived the target node
          // as described on https://issues.jboss.org/browse/JBPAPP-6130
          Message copyRedistribute = message.copy(storageManager.generateID());
+         copyRedistribute.setAddress(originatingQueue.getAddress());
+
          if (tx != null) {
             tx.addOperation(new TransactionOperationAbstract() {
                @Override

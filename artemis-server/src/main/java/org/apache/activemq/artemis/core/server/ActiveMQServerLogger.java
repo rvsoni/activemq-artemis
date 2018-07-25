@@ -1361,8 +1361,8 @@ public interface ActiveMQServerLogger extends BasicLogger {
    void negativeGlobalAddressSize(long size);
 
    @LogMessage(level = Logger.Level.WARN)
-   @Message(id = 222216, value = "Security problem while creating session: {0}", format = Message.Format.MESSAGE_FORMAT)
-   void securityProblemWhileCreatingSession(String message);
+   @Message(id = 222216, value = "Security problem while authenticating: {0}", format = Message.Format.MESSAGE_FORMAT)
+   void securityProblemWhileAuthenticating(String message);
 
    @LogMessage(level = Logger.Level.WARN)
    @Message(id = 222217, value = "Cannot find connector-ref {0}. The cluster-connection {1} will not be deployed.", format = Message.Format.MESSAGE_FORMAT)
@@ -1942,4 +1942,12 @@ public interface ActiveMQServerLogger extends BasicLogger {
    @LogMessage(level = Logger.Level.ERROR)
    @Message(id = 224093, value = "Reference to message is null", format = Message.Format.MESSAGE_FORMAT)
    void nullRefMessage();
+
+   @LogMessage(level = Logger.Level.TRACE)
+   @Message(id = 224094, value = "Quorum vote result await is interrupted", format = Message.Format.MESSAGE_FORMAT)
+   void quorumVoteAwaitInterrupted();
+
+   @LogMessage(level = Logger.Level.ERROR)
+   @Message(id = 224095, value = "Error updating Consumer Count: {0}", format = Message.Format.MESSAGE_FORMAT)
+   void consumerCountError(String reason);
 }

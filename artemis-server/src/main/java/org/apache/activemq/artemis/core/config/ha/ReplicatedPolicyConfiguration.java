@@ -37,8 +37,11 @@ public class ReplicatedPolicyConfiguration implements HAPolicyConfiguration {
 
    private long voteRetryWait = ActiveMQDefaultConfiguration.getDefaultVoteRetryWait();
 
+   private  int quorumVoteWait = ActiveMQDefaultConfiguration.getDefaultQuorumVoteWait();
+
    public ReplicatedPolicyConfiguration() {
    }
+
 
    @Override
    public TYPE getType() {
@@ -76,24 +79,27 @@ public class ReplicatedPolicyConfiguration implements HAPolicyConfiguration {
       return initialReplicationSyncTimeout;
    }
 
-   public void setInitialReplicationSyncTimeout(long initialReplicationSyncTimeout) {
+   public ReplicatedPolicyConfiguration setInitialReplicationSyncTimeout(long initialReplicationSyncTimeout) {
       this.initialReplicationSyncTimeout = initialReplicationSyncTimeout;
+      return this;
    }
 
    public boolean getVoteOnReplicationFailure() {
       return voteOnReplicationFailure;
    }
 
-   public void setVoteOnReplicationFailure(boolean voteOnReplicationFailure) {
+   public ReplicatedPolicyConfiguration setVoteOnReplicationFailure(boolean voteOnReplicationFailure) {
       this.voteOnReplicationFailure = voteOnReplicationFailure;
+      return this;
    }
 
    public int getQuorumSize() {
       return quorumSize;
    }
 
-   public void setQuorumSize(int quorumSize) {
+   public ReplicatedPolicyConfiguration setQuorumSize(int quorumSize) {
       this.quorumSize = quorumSize;
+      return this;
    }
 
 
@@ -101,15 +107,26 @@ public class ReplicatedPolicyConfiguration implements HAPolicyConfiguration {
       return voteRetries;
    }
 
-   public void setVoteRetries(int voteRetries) {
+   public ReplicatedPolicyConfiguration setVoteRetries(int voteRetries) {
       this.voteRetries = voteRetries;
+      return this;
    }
 
-   public void setVoteRetryWait(long voteRetryWait) {
+   public ReplicatedPolicyConfiguration setVoteRetryWait(long voteRetryWait) {
       this.voteRetryWait = voteRetryWait;
+      return this;
    }
 
    public long getVoteRetryWait() {
       return voteRetryWait;
+   }
+
+   public int getQuorumVoteWait() {
+      return quorumVoteWait;
+   }
+
+   public ReplicatedPolicyConfiguration setQuorumVoteWait(int quorumVoteWait) {
+      this.quorumVoteWait = quorumVoteWait;
+      return this;
    }
 }

@@ -583,9 +583,15 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          securityCheck(addressInfo.getName(), name, CheckType.CREATE_NON_DURABLE_QUEUE, this);
       }
 
+      AddressSettings as = server.getAddressSettingsRepository().getMatch(art.getName().toString());
+
+      if (as.isAutoCreateAddresses() && server.getAddressInfo(art.getName()) == null) {
+         securityCheck(addressInfo.getName(), name, CheckType.CREATE_ADDRESS, this);
+      }
+
       server.checkQueueCreationLimit(getUsername());
 
-      Queue queue = server.createQueue(art, unPrefixedName, filterString, SimpleString.toSimpleString(getUsername()), durable, temporary, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, lastValue, server.getAddressSettingsRepository().getMatch(art.getName().toString()).isAutoCreateAddresses());
+      Queue queue = server.createQueue(art, unPrefixedName, filterString, SimpleString.toSimpleString(getUsername()), durable, temporary, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, lastValue, as.isAutoCreateAddresses());
 
       if (temporary) {
          // Temporary queue in core simply means the queue will be deleted if
@@ -1517,6 +1523,9 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       ServerSession sessionWithMetaData = server.lookupSession(key, data);
       if (sessionWithMetaData != null && sessionWithMetaData != this) {
          // There is a duplication of this property
+         if (server.hasBrokerPlugins()) {
+            server.callBrokerPlugins(plugin -> plugin.duplicateSessionMetadataFailure(this, key, data));
+         }
          return false;
       } else {
          addMetaData(key, data);
@@ -1536,6 +1545,11 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          installJMSHooks();
       }
       return data;
+   }
+
+   @Override
+   public Map<String, String> getMetaData() {
+      return metaData;
    }
 
    @Override

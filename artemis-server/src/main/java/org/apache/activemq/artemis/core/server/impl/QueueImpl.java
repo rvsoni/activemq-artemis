@@ -136,7 +136,7 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
 
    private final SimpleString name;
 
-   private final SimpleString user;
+   private SimpleString user;
 
    private volatile Filter filter;
 
@@ -248,8 +248,6 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
 
    private final ReusableLatch deliveriesInTransit = new ReusableLatch(0);
 
-   private volatile boolean caused = false;
-
    private final AtomicLong queueRateCheckTime = new AtomicLong(System.currentTimeMillis());
 
    private final AtomicLong messagesAddedSnapshot = new AtomicLong(0);
@@ -265,8 +263,6 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
    private volatile boolean purgeOnNoConsumers;
 
    private final AddressInfo addressInfo;
-
-   private final AtomicInteger noConsumers = new AtomicInteger(0);
 
    private volatile RoutingType routingType;
 
@@ -491,6 +487,11 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
    @Override
    public SimpleString getUser() {
       return user;
+   }
+
+   @Override
+   public void setUser(SimpleString user) {
+      this.user = user;
    }
 
    @Override
@@ -763,11 +764,6 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
     */
    private boolean flushDeliveriesInTransit() {
       try {
-
-         if (!deliveriesInTransit.await(100, TimeUnit.MILLISECONDS)) {
-            caused = true;
-            System.err.println("There are currently " + deliveriesInTransit.getCount() + " credits");
-         }
          if (deliveriesInTransit.await(DELIVERY_TIMEOUT)) {
             return true;
          } else {
@@ -881,7 +877,7 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
       try {
          synchronized (this) {
 
-            if (maxConsumers != MAX_CONSUMERS_UNLIMITED && noConsumers.get() >= maxConsumers) {
+            if (maxConsumers != MAX_CONSUMERS_UNLIMITED && consumersCount.get() >= maxConsumers) {
                throw ActiveMQMessageBundle.BUNDLE.maxConsumerLimitReachedForQueue(address, name);
             }
 
@@ -903,12 +899,10 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
                refCountForConsumers.increment();
             }
 
-            noConsumers.incrementAndGet();
          }
       } finally {
          leaveCritical(CRITICAL_CONSUMER);
       }
-
 
    }
 
@@ -964,7 +958,6 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
                refCountForConsumers.decrement();
             }
 
-            noConsumers.decrementAndGet();
          }
       } finally {
          leaveCritical(CRITICAL_CONSUMER);
@@ -1182,22 +1175,22 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
    }
 
    @Override
-   public synchronized int getScheduledCount() {
+   public int getScheduledCount() {
       return scheduledDeliveryHandler.getScheduledCount();
    }
 
    @Override
-   public synchronized long getScheduledSize() {
+   public long getScheduledSize() {
       return scheduledDeliveryHandler.getScheduledSize();
    }
 
    @Override
-   public synchronized int getDurableScheduledCount() {
+   public int getDurableScheduledCount() {
       return scheduledDeliveryHandler.getDurableScheduledCount();
    }
 
    @Override
-   public synchronized long getDurableScheduledSize() {
+   public long getDurableScheduledSize() {
       return scheduledDeliveryHandler.getDurableScheduledSize();
    }
 
@@ -1792,6 +1785,12 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
 
       @Override
       public void run() {
+
+         boolean expired = false;
+         boolean hasElements = false;
+         int elementsExpired = 0;
+
+         LinkedList<MessageReference> expiredMessages = new LinkedList<>();
          synchronized (QueueImpl.this) {
             if (queueDestroyed) {
                return;
@@ -1800,53 +1799,23 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
 
             LinkedListIterator<MessageReference> iter = iterator();
 
-            boolean expired = false;
-            boolean hasElements = false;
-
-            int elementsExpired = 0;
             try {
-               Transaction tx = null;
-
                while (postOffice.isStarted() && iter.hasNext()) {
                   hasElements = true;
                   MessageReference ref = iter.next();
-                  try {
-                     if (ref.getMessage().isExpired()) {
-                        if (tx == null) {
-                           tx = new TransactionImpl(storageManager);
-                        }
-                        incDelivering(ref);
-                        expired = true;
-                        expire(tx, ref);
-                        iter.remove();
-                        refRemoved(ref);
+                  if (ref.getMessage().isExpired()) {
+                     incDelivering(ref);
+                     expired = true;
+                     expiredMessages.add(ref);
+                     iter.remove();
 
-                        if (++elementsExpired >= MAX_DELIVERIES_IN_LOOP) {
-                           logger.debug("Breaking loop of expiring");
-                           scannerRunning.incrementAndGet();
-                           getExecutor().execute(this);
-                           break;
-                        }
+                     if (++elementsExpired >= MAX_DELIVERIES_IN_LOOP) {
+                        logger.debug("Breaking loop of expiring");
+                        scannerRunning.incrementAndGet();
+                        getExecutor().execute(this);
+                        break;
                      }
-
-                  } catch (Exception e) {
-                     ActiveMQServerLogger.LOGGER.errorExpiringReferencesOnQueue(e, ref);
                   }
-               }
-
-               logger.debug("Expired " + elementsExpired + " references");
-
-               try {
-                  if (tx != null) {
-                     tx.commit();
-                  }
-               } catch (Exception e) {
-                  ActiveMQServerLogger.LOGGER.unableToCommitTransaction(e);
-               }
-
-               // If empty we need to schedule depaging to make sure we would depage expired messages as well
-               if ((!hasElements || expired) && pageIterator != null && pageIterator.hasNext()) {
-                  scheduleDepage(true);
                }
             } finally {
                try {
@@ -1857,6 +1826,35 @@ public class QueueImpl extends CriticalComponentImpl implements Queue {
                logger.debug("Scanning for expires on " + QueueImpl.this.getName() + " done");
 
             }
+         }
+
+         if (!expiredMessages.isEmpty()) {
+            Transaction tx = new TransactionImpl(storageManager);
+            for (MessageReference ref : expiredMessages) {
+               if (tx == null) {
+                  tx = new TransactionImpl(storageManager);
+               }
+               try {
+                  expire(tx, ref);
+                  refRemoved(ref);
+               } catch (Exception e) {
+                  ActiveMQServerLogger.LOGGER.errorExpiringReferencesOnQueue(e, ref);
+               }
+            }
+
+            try {
+               tx.commit();
+            } catch (Exception e) {
+               ActiveMQServerLogger.LOGGER.unableToCommitTransaction(e);
+            }
+            logger.debug("Expired " + elementsExpired + " references");
+
+
+         }
+
+         // If empty we need to schedule depaging to make sure we would depage expired messages as well
+         if ((!hasElements || expired) && pageIterator != null && pageIterator.hasNext()) {
+            scheduleDepage(true);
          }
       }
    }

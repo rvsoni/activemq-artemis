@@ -31,17 +31,25 @@ import javax.security.auth.login.LoginContext;
 import javax.security.auth.login.LoginException;
 import javax.security.auth.spi.LoginModule;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Hashtable;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.activemq.artemis.spi.core.security.jaas.JaasCallbackHandler;
 import org.apache.activemq.artemis.spi.core.security.jaas.LDAPLoginModule;
+import org.apache.activemq.artemis.spi.core.security.jaas.LDAPLoginProperty;
 import org.apache.directory.server.annotations.CreateLdapServer;
 import org.apache.directory.server.annotations.CreateTransport;
 import org.apache.directory.server.core.annotations.ApplyLdifFiles;
 import org.apache.directory.server.core.integ.AbstractLdapTestUnit;
 import org.apache.directory.server.core.integ.FrameworkRunner;
+import org.jboss.logging.Logger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -56,6 +64,8 @@ import static org.junit.Assert.fail;
 @CreateLdapServer(transports = {@CreateTransport(protocol = "LDAP", port = 1024)})
 @ApplyLdifFiles("test.ldif")
 public class LDAPLoginModuleTest extends AbstractLdapTestUnit {
+
+   private static final Logger logger = Logger.getLogger(LDAPLoginModuleTest.class);
 
    private static final String PRINCIPAL = "uid=admin,ou=system";
    private static final String CREDENTIALS = "secret";
@@ -105,7 +115,9 @@ public class LDAPLoginModuleTest extends AbstractLdapTestUnit {
    }
 
    @Test
-   public void testLogin() throws LoginException {
+   public void testLogin() throws Exception {
+      logger.info("num session: " + ldapServer.getLdapSessionManager().getSessions().length);
+
       LoginContext context = new LoginContext("LDAPLogin", new CallbackHandler() {
          @Override
          public void handle(Callback[] callbacks) throws IOException, UnsupportedCallbackException {
@@ -122,10 +134,77 @@ public class LDAPLoginModuleTest extends AbstractLdapTestUnit {
       });
       context.login();
       context.logout();
+
+      assertTrue("sessions still active after logout", waitFor(() -> ldapServer.getLdapSessionManager().getSessions().length == 0));
    }
 
    @Test
-   public void testUnauthenticated() throws LoginException {
+   public void testLoginPooled() throws Exception {
+      CallbackHandler callbackHandler = callbacks -> {
+         for (int i = 0; i < callbacks.length; i++) {
+            if (callbacks[i] instanceof NameCallback) {
+               ((NameCallback) callbacks[i]).setName("first");
+            } else if (callbacks[i] instanceof PasswordCallback) {
+               ((PasswordCallback) callbacks[i]).setPassword("secret".toCharArray());
+            } else {
+               throw new UnsupportedCallbackException(callbacks[i]);
+            }
+         }
+      };
+
+      LoginContext context = new LoginContext("LDAPLoginPooled", callbackHandler);
+      context.login();
+      context.logout();
+
+      // again
+      context.login();
+      context.logout();
+
+      // new context
+      context = new LoginContext("LDAPLoginPooled", callbackHandler);
+      context.login();
+      context.logout();
+
+      Executor pool = Executors.newCachedThreadPool();
+      for (int i = 0; i < 20; i++) {
+         pool.execute(() -> {
+            try {
+               LoginContext context1 = new LoginContext("LDAPLoginPooled", callbackHandler);
+               context1.login();
+               context1.logout();
+            } catch (Exception ignored) {
+            }
+         });
+      }
+
+      /*
+       * The number of sessions here is variable due to the pool used to create the LoginContext objects and the pooling
+       * for the LDAP connections (which are managed by the JVM implementation). We really just need to confirm that
+       * there are still connections to the LDAP server open even after all the LoginContext objects are closed as that
+       * will indicate the LDAP connection pooling is working.
+       */
+      assertTrue("not enough active sessions after logout", waitFor(() -> ldapServer.getLdapSessionManager().getSessions().length >= 5));
+
+      ((ExecutorService) pool).shutdown();
+      ((ExecutorService) pool).awaitTermination(2, TimeUnit.SECONDS);
+   }
+
+   public interface Condition {
+      boolean isSatisfied() throws Exception;
+   }
+
+   private boolean waitFor(final Condition condition) throws Exception {
+      final long expiry = System.currentTimeMillis() + 5000;
+      boolean conditionSatisified = condition.isSatisfied();
+      while (!conditionSatisified && System.currentTimeMillis() < expiry) {
+         TimeUnit.MILLISECONDS.sleep(100);
+         conditionSatisified = condition.isSatisfied();
+      }
+      return conditionSatisified;
+   }
+
+   @Test
+   public void testUnauthenticated() throws Exception {
       LoginContext context = new LoginContext("UnAuthenticatedLDAPLogin", new CallbackHandler() {
          @Override
          public void handle(Callback[] callbacks) throws IOException, UnsupportedCallbackException {
@@ -147,6 +226,7 @@ public class LDAPLoginModuleTest extends AbstractLdapTestUnit {
          return;
       }
       fail("Should have failed authenticating");
+      assertTrue("sessions still active after logout", waitFor(() -> ldapServer.getLdapSessionManager().getSessions().length == 0));
    }
 
    @Test
@@ -162,4 +242,38 @@ public class LDAPLoginModuleTest extends AbstractLdapTestUnit {
       // since login failed commit should return false as well
       assertFalse(loginModule.commit());
    }
+
+   @Test
+   public void testPropertyConfigMap() throws Exception {
+      LDAPLoginModule loginModule = new LDAPLoginModule();
+      JaasCallbackHandler callbackHandler = new JaasCallbackHandler(null, null, null);
+
+      Field configMap = null;
+      HashMap<String, Object> options = new HashMap<>();
+      for (Field field: loginModule.getClass().getDeclaredFields()) {
+         if (Modifier.isStatic(field.getModifiers()) && Modifier.isFinal(field.getModifiers()) && field.getType().isAssignableFrom(String.class)) {
+            field.setAccessible(true);
+            options.put((String)field.get(loginModule), "SET");
+         }
+         if (field.getName().equals("config")) {
+            field.setAccessible(true);
+            configMap = field;
+         }
+      }
+      loginModule.initialize(new Subject(), callbackHandler, null, options);
+
+      LDAPLoginProperty[] ldapProps = (LDAPLoginProperty[]) configMap.get(loginModule);
+      for (String key: options.keySet()) {
+         assertTrue("val set: " + key, presentInArray(ldapProps, key));
+      }
+   }
+
+   private boolean presentInArray(LDAPLoginProperty[] ldapProps, String propertyName) {
+      for (LDAPLoginProperty conf : ldapProps) {
+         if (conf.getPropertyName().equals(propertyName) && (conf.getPropertyValue() != null && !"".equals(conf.getPropertyValue())))
+            return true;
+      }
+      return false;
+   }
+
 }

@@ -55,16 +55,22 @@ import org.junit.runners.Parameterized;
 
 @RunWith(value = Parameterized.class)
 public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
+   String suffix = "";
 
    @Parameterized.Parameters(name = "storeType={0}")
    public static Collection getParameters() {
-      return Arrays.asList(new Object[][]{{"JCEKS"}, {"JKS"}});
+      return Arrays.asList(new Object[][]{{"JCEKS"}, {"JKS"}, {"PKCS12"}});
    }
 
    public CoreClientOverOneWaySSLTest(String storeType) {
       this.storeType = storeType;
-      SERVER_SIDE_KEYSTORE = "server-side-keystore." + storeType.toLowerCase();
-      CLIENT_SIDE_TRUSTSTORE = "client-side-truststore." + storeType.toLowerCase();
+      suffix = storeType.toLowerCase();
+      // keytool expects PKCS12 stores to use the extension "p12"
+      if (storeType.equals("PKCS12")) {
+         suffix = "p12";
+      }
+      SERVER_SIDE_KEYSTORE = "server-side-keystore." + suffix;
+      CLIENT_SIDE_TRUSTSTORE = "client-side-truststore." + suffix;
    }
 
    public static final SimpleString QUEUE = new SimpleString("QueueOverSSL");
@@ -97,6 +103,19 @@ public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
     * keytool -genkey -keystore verified-server-side-keystore.jceks -storetype JCEKS -storepass secureexample -keypass secureexample -dname "CN=localhost, OU=Artemis, O=ActiveMQ, L=AMQ, S=AMQ, C=AMQ"
     * keytool -export -keystore verified-server-side-keystore.jceks -file activemq-jceks.cer -storetype jceks -storepass secureexample
     * keytool -import -keystore verified-client-side-truststore.jceks -storetype JCEKS -file activemq-jceks.cer -storepass secureexample -keypass secureexample -noprompt
+    *
+    * Commands to create the PKCS12 artifacts:
+    * keytool -genkey -keystore server-side-keystore.p12 -storetype PKCS12 -storepass secureexample -keypass secureexample -dname "CN=ActiveMQ Artemis Server, OU=Artemis, O=ActiveMQ, L=AMQ, S=AMQ, C=AMQ" -keyalg RSA
+    * keytool -export -keystore server-side-keystore.p12 -file activemq-p12.cer -storetype PKCS12 -storepass secureexample
+    * keytool -import -keystore client-side-truststore.p12 -storetype PKCS12 -file activemq-p12.cer -storepass secureexample -keypass secureexample -noprompt
+    *
+    * keytool -genkey -keystore other-server-side-keystore.p12 -storetype PKCS12 -storepass secureexample -keypass secureexample -dname "CN=Other ActiveMQ Artemis Server, OU=Artemis, O=ActiveMQ, L=AMQ, S=AMQ, C=AMQ" -keyalg RSA
+    * keytool -export -keystore other-server-side-keystore.p12 -file activemq-p12.cer -storetype PKCS12 -storepass secureexample
+    * keytool -import -keystore other-client-side-truststore.p12 -storetype PKCS12 -file activemq-p12.cer -storepass secureexample -keypass secureexample -noprompt
+    *
+    * keytool -genkey -keystore verified-server-side-keystore.p12 -storetype PKCS12 -storepass secureexample -keypass secureexample -dname "CN=localhost, OU=Artemis, O=ActiveMQ, L=AMQ, S=AMQ, C=AMQ" -keyalg RSA
+    * keytool -export -keystore verified-server-side-keystore.p12 -file activemq-p12.cer -storetype PKCS12 -storepass secureexample
+    * keytool -import -keystore verified-client-side-truststore.p12 -storetype PKCS12 -file activemq-p12.cer -storepass secureexample -keypass secureexample -noprompt
     */
    private String storeType;
    private String SERVER_SIDE_KEYSTORE;
@@ -220,7 +239,11 @@ public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
       tc.getParams().put(TransportConstants.SSL_ENABLED_PROP_NAME, true);
       tc.getParams().put(TransportConstants.USE_DEFAULT_SSL_CONTEXT_PROP_NAME, true);
 
-      SSLContext.setDefault(SSLSupport.createContext(TransportConstants.DEFAULT_KEYSTORE_PROVIDER, TransportConstants.DEFAULT_KEYSTORE_PATH, TransportConstants.DEFAULT_KEYSTORE_PASSWORD, storeType, CLIENT_SIDE_TRUSTSTORE, PASSWORD));
+      SSLContext.setDefault(new SSLSupport()
+                               .setTruststoreProvider(storeType)
+                               .setTruststorePath(CLIENT_SIDE_TRUSTSTORE)
+                               .setTruststorePassword(PASSWORD)
+                               .createContext());
 
       ServerLocator locator = addServerLocator(ActiveMQClient.createServerLocatorWithoutHA(tc));
       ClientSessionFactory sf = addSessionFactory(createSessionFactory(locator));
@@ -309,7 +332,7 @@ public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
       // create an invalid SSL connection
       tc.getParams().put(TransportConstants.SSL_ENABLED_PROP_NAME, true);
       tc.getParams().put(TransportConstants.TRUSTSTORE_PROVIDER_PROP_NAME, storeType);
-      tc.getParams().put(TransportConstants.TRUSTSTORE_PATH_PROP_NAME, "other-client-side-truststore." + storeType.toLowerCase());
+      tc.getParams().put(TransportConstants.TRUSTSTORE_PATH_PROP_NAME, "other-client-side-truststore." + suffix);
       tc.getParams().put(TransportConstants.TRUSTSTORE_PASSWORD_PROP_NAME, PASSWORD);
 
       ServerLocator locator = addServerLocator(ActiveMQClient.createServerLocatorWithoutHA(tc)).setCallTimeout(3000);
@@ -322,7 +345,7 @@ public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
 
       // reload the acceptor to reload the SSL stores
       NettyAcceptor acceptor = (NettyAcceptor) server.getRemotingService().getAcceptor("nettySSL");
-      acceptor.setKeyStorePath("other-server-side-keystore." + storeType.toLowerCase());
+      acceptor.setKeyStorePath("other-server-side-keystore." + suffix);
       acceptor.reload();
 
       // create a session with the locator which failed previously proving that the SSL stores have been reloaded
@@ -643,7 +666,14 @@ public class CoreClientOverOneWaySSLTest extends ActiveMQTestBase {
    }
 
    public String[] getEnabledCipherSuites() throws Exception {
-      SSLContext context = SSLSupport.createContext(storeType, SERVER_SIDE_KEYSTORE, PASSWORD, storeType, CLIENT_SIDE_TRUSTSTORE, PASSWORD);
+      SSLContext context = new SSLSupport()
+         .setKeystoreProvider(storeType)
+         .setKeystorePath(SERVER_SIDE_KEYSTORE)
+         .setKeystorePassword(PASSWORD)
+         .setTruststoreProvider(storeType)
+         .setTruststorePath(CLIENT_SIDE_TRUSTSTORE)
+         .setTruststorePassword(PASSWORD)
+         .createContext();
       SSLEngine engine = context.createSSLEngine();
       return engine.getEnabledCipherSuites();
    }

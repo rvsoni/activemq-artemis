@@ -1093,6 +1093,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       String address = null;
       String filterString = null;
       boolean durable = true;
+      boolean maxConumserConfigured = false;
       int maxConsumers = ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers();
       boolean purgeOnNoConsumers = ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers();
       String user = null;
@@ -1105,6 +1106,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          if (item.getNodeName().equals("max-consumers")) {
             maxConsumers = Integer.parseInt(item.getNodeValue());
             Validators.MAX_QUEUE_CONSUMERS.validate(name, maxConsumers);
+            maxConumserConfigured = true;
          } else if (item.getNodeName().equals("purge-on-no-consumers")) {
             purgeOnNoConsumers = Boolean.parseBoolean(item.getNodeValue());
          } else if (item.getNodeName().equals("exclusive")) {
@@ -1130,7 +1132,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       }
 
       return new CoreQueueConfiguration().setAddress(address).setName(name).setFilterString(filterString).setDurable(durable).setMaxConsumers(maxConsumers).setPurgeOnNoConsumers(purgeOnNoConsumers).setUser(user)
-                                         .setExclusive(exclusive).setLastValue(lastValue);
+                                         .setExclusive(exclusive).setLastValue(lastValue).setMaxConsumerConfigured(maxConumserConfigured);
    }
 
    protected CoreAddressConfiguration parseAddressConfiguration(final Node node) {
@@ -1303,6 +1305,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
    private ReplicatedPolicyConfiguration createReplicatedHaPolicy(Element policyNode) {
       ReplicatedPolicyConfiguration configuration = new ReplicatedPolicyConfiguration();
 
+      configuration.setQuorumVoteWait(getInteger(policyNode, "quorum-vote-wait", ActiveMQDefaultConfiguration.getDefaultQuorumVoteWait(), Validators.GT_ZERO));
+
       configuration.setCheckForLiveServer(getBoolean(policyNode, "check-for-live-server", configuration.isCheckForLiveServer()));
 
       configuration.setGroupName(getString(policyNode, "group-name", configuration.getGroupName(), Validators.NO_CHECK));
@@ -1323,7 +1327,10 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
    }
 
    private ReplicaPolicyConfiguration createReplicaHaPolicy(Element policyNode) {
+
       ReplicaPolicyConfiguration configuration = new ReplicaPolicyConfiguration();
+
+      configuration.setQuorumVoteWait(getInteger(policyNode, "quorum-vote-wait", ActiveMQDefaultConfiguration.getDefaultQuorumVoteWait(), Validators.GT_ZERO));
 
       configuration.setRestartBackup(getBoolean(policyNode, "restart-backup", configuration.isRestartBackup()));
 

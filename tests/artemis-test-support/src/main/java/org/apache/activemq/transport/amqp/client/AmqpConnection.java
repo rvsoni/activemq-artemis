@@ -49,6 +49,7 @@ import org.apache.qpid.proton.engine.EndpointState;
 import org.apache.qpid.proton.engine.Event;
 import org.apache.qpid.proton.engine.Event.Type;
 import org.apache.qpid.proton.engine.Sasl;
+import org.apache.qpid.proton.engine.Session;
 import org.apache.qpid.proton.engine.Transport;
 import org.apache.qpid.proton.engine.impl.CollectorImpl;
 import org.apache.qpid.proton.engine.impl.TransportImpl;
@@ -103,7 +104,9 @@ public class AmqpConnection extends AmqpAbstractResource<Connection> implements 
    private boolean idleProcessingDisabled;
    private String containerId;
    private boolean authenticated;
+   private int maxFrameSize = DEFAULT_MAX_FRAME_SIZE;
    private int channelMax = DEFAULT_CHANNEL_MAX;
+   private int sessionIncomingCapacity = 0;
    private long connectTimeout = DEFAULT_CONNECT_TIMEOUT;
    private long closeTimeout = DEFAULT_CLOSE_TIMEOUT;
    private long drainTimeout = DEFAULT_DRAIN_TIMEOUT;
@@ -278,7 +281,9 @@ public class AmqpConnection extends AmqpAbstractResource<Connection> implements 
          @Override
          public void run() {
             checkClosed();
-            session.setEndpoint(getEndpoint().session());
+            Session protonSession = getEndpoint().session();
+            protonSession.setIncomingCapacity(sessionIncomingCapacity);
+            session.setEndpoint(protonSession);
             session.setStateInspector(getStateInspector());
             session.open(request);
             pumpToProtonTransport(request);
@@ -367,7 +372,11 @@ public class AmqpConnection extends AmqpAbstractResource<Connection> implements 
     * @return the currently set Max Frame Size value.
     */
    public int getMaxFrameSize() {
-      return DEFAULT_MAX_FRAME_SIZE;
+      return maxFrameSize;
+   }
+
+   public void setMaxFrameSize(int maxFrameSize) {
+      this.maxFrameSize = maxFrameSize;
    }
 
    public int getChannelMax() {
@@ -376,6 +385,14 @@ public class AmqpConnection extends AmqpAbstractResource<Connection> implements 
 
    public void setChannelMax(int channelMax) {
       this.channelMax = channelMax;
+   }
+
+   public int getSessionIncomingCapacity() {
+      return sessionIncomingCapacity;
+   }
+
+   public void setSessionIncomingCapacity(int capacity) {
+      this.sessionIncomingCapacity = capacity;
    }
 
    public long getConnectTimeout() {

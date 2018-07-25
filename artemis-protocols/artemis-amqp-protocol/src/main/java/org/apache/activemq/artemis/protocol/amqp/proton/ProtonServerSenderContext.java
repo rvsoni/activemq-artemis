@@ -23,7 +23,6 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
-import org.apache.activemq.artemis.api.core.ActiveMQQueueExistsException;
 import org.apache.activemq.artemis.api.core.ActiveMQSecurityException;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.RoutingType;
@@ -370,10 +369,9 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
                isVolatile = true;
                if (shared && sender.getName() != null) {
                   queue = createQueueName(connection.isUseCoreSubscriptionNaming(), getClientId(), sender.getName(), shared, global, isVolatile);
-                  try {
+                  QueueQueryResult result = sessionSPI.queueQuery(queue, routingTypeToUse, false);
+                  if (!(result.isExists() && Objects.equals(result.getAddress(), addressToUse) && Objects.equals(result.getFilterString(), simpleStringSelector))) {
                      sessionSPI.createSharedVolatileQueue(addressToUse, RoutingType.MULTICAST, queue, simpleStringSelector);
-                  } catch (ActiveMQQueueExistsException e) {
-                     //this is ok, just means its shared
                   }
                } else {
                   queue = SimpleString.toSimpleString(java.util.UUID.randomUUID().toString());
@@ -691,6 +689,7 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       byte[] tag = preSettle ? new byte[0] : protonSession.getTag();
 
       // Let the Message decide how to present the message bytes
+      boolean attemptRelease = true;
       ReadableBuffer sendBuffer = message.getSendBuffer(deliveryCount);
 
       try {
@@ -714,7 +713,16 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
             delivery.setMessageFormat((int) message.getMessageFormat());
             delivery.setContext(messageReference);
 
-            sender.sendNoCopy(sendBuffer);
+            if (sendBuffer instanceof NettyReadable) {
+               sender.send(sendBuffer);
+               // Above send copied, so release now if needed
+               attemptRelease = false;
+               ((NettyReadable) sendBuffer).getByteBuf().release();
+            } else {
+               // Don't have pooled content, no need to release or copy.
+               attemptRelease = false;
+               sender.sendNoCopy(sendBuffer);
+            }
 
             if (preSettle) {
                // Presettled means the client implicitly accepts any delivery we send it.
@@ -730,7 +738,7 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
 
          return size;
       } finally {
-         if (sendBuffer instanceof NettyReadable) {
+         if (attemptRelease && sendBuffer instanceof NettyReadable) {
             ((NettyReadable) sendBuffer).getByteBuf().release();
          }
       }

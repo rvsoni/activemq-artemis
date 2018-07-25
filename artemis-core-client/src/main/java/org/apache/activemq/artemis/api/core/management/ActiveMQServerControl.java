@@ -396,12 +396,6 @@ public interface ActiveMQServerControl {
    String[] getQueueNames();
 
    /**
-    * Returns the names of the queues created on this server with the given routing-type.
-    */
-   @Attribute(desc = "Names of the queues created on this server with the given routing-type (i.e. ANYCAST or MULTICAST)")
-   String[] getQueueNames(String routingType);
-
-   /**
     * Returns the uptime of this server.
     */
    @Attribute(desc = "Uptime of this server")
@@ -611,6 +605,7 @@ public interface ActiveMQServerControl {
     * @return a textual summary of the queue
     * @throws Exception
     */
+   @Deprecated
    @Operation(desc = "Update a queue", impact = MBeanOperationInfo.ACTION)
    String updateQueue(@Parameter(name = "name", desc = "Name of the queue") String name,
                       @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
@@ -624,7 +619,28 @@ public interface ActiveMQServerControl {
     * @param routingType        the routing type used for this address, {@code MULTICAST} or {@code ANYCAST}
     * @param maxConsumers       the maximum number of consumers allowed on this queue at any one time
     * @param purgeOnNoConsumers delete this queue when the last consumer disconnects
+    * @param exclusive          if the queue should route exclusively to one consumer
     * @return a textual summary of the queue
+    * @throws Exception
+    */
+   @Deprecated
+   @Operation(desc = "Update a queue", impact = MBeanOperationInfo.ACTION)
+   String updateQueue(@Parameter(name = "name", desc = "Name of the queue") String name,
+                      @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
+                      @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") Integer maxConsumers,
+                      @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") Boolean purgeOnNoConsumers,
+                      @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive) throws Exception;
+
+   /**
+    * Update a queue
+    *
+    * @param name               name of the queue
+    * @param routingType        the routing type used for this address, {@code MULTICAST} or {@code ANYCAST}
+    * @param maxConsumers       the maximum number of consumers allowed on this queue at any one time
+    * @param purgeOnNoConsumers delete this queue when the last consumer disconnects
+    * @param exclusive          if the queue should route exclusively to one consumer
+    * @param user               the user associated with this queue
+    * @return
     * @throws Exception
     */
    @Operation(desc = "Update a queue", impact = MBeanOperationInfo.ACTION)
@@ -632,7 +648,8 @@ public interface ActiveMQServerControl {
                       @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
                       @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") Integer maxConsumers,
                       @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") Boolean purgeOnNoConsumers,
-                      @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive) throws Exception;
+                      @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive,
+                      @Parameter(name = "user", desc = "The user associated with this queue") String user) throws Exception;
 
    /**
     * Deploy a durable queue.
@@ -1218,33 +1235,39 @@ public interface ActiveMQServerControl {
    String listAddresses(@Parameter(name = "separator", desc = "Separator used on the string listing") String separator) throws Exception;
 
    @Operation(desc = "Search for Connections", impact = MBeanOperationInfo.INFO)
-   String listConnections(@Parameter(name = "Options") String options,
-                          @Parameter(name = "Page Number") int page,
-                          @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listConnections(@Parameter(name = "options", desc = "Options") String options,
+                          @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                          @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
 
    @Operation(desc = "Search for Sessions", impact = MBeanOperationInfo.INFO)
-   String listSessions(@Parameter(name = "Options") String options,
-                       @Parameter(name = "Page Number") int page,
-                       @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listSessions(@Parameter(name = "options", desc = "Options") String options,
+                       @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                       @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
 
    @Operation(desc = "Search for Consumers", impact = MBeanOperationInfo.INFO)
-   String listConsumers(@Parameter(name = "Options") String options,
-                        @Parameter(name = "Page Number") int page,
-                        @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listConsumers(@Parameter(name = "options", desc = "Options") String options,
+                        @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                        @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
 
    @Operation(desc = "Search for Consumers", impact = MBeanOperationInfo.INFO)
-   String listProducers(@Parameter(name = "Options") String options,
-                        @Parameter(name = "Page Number") int page,
-                        @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listProducers(@Parameter(name = "options", desc = "Options") String options,
+                        @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                        @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
 
    @Operation(desc = "Search for Addresses", impact = MBeanOperationInfo.INFO)
-   String listAddresses(@Parameter(name = "Options") String options,
-                        @Parameter(name = "Page Number") int page,
-                        @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listAddresses(@Parameter(name = "options", desc = "Options") String options,
+                        @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                        @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
 
    @Operation(desc = "Search for Queues", impact = MBeanOperationInfo.INFO)
-   String listQueues(@Parameter(name = "Options") String options,
-                     @Parameter(name = "Page Number") int page,
-                     @Parameter(name = "Page Size") int pageSize) throws Exception;
+   String listQueues(@Parameter(name = "options", desc = "Options") String options,
+                     @Parameter(name = "pageNumber", desc = "Page Number") int page,
+                     @Parameter(name = "pageSize", desc = "Page Size") int pageSize) throws Exception;
+
+   /**
+    * Returns the names of the queues created on this server with the given routing-type.
+    */
+   @Operation(desc = "Names of the queues created on this server with the given routing-type (i.e. ANYCAST or MULTICAST)", impact = MBeanOperationInfo.INFO)
+   String[] getQueueNames(@Parameter(name = "routingType", desc = "The routing type, MULTICAST or ANYCAST") String routingType);
 }
 

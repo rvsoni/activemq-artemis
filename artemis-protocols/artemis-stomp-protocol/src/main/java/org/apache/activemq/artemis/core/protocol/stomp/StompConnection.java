@@ -16,6 +16,7 @@
  */
 package org.apache.activemq.artemis.core.protocol.stomp;
 
+import javax.security.auth.Subject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -31,6 +32,7 @@ import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffers;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQQueueExistsException;
+import org.apache.activemq.artemis.api.core.ActiveMQSecurityException;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
@@ -52,12 +54,13 @@ import org.apache.activemq.artemis.spi.core.remoting.ReadyListener;
 import org.apache.activemq.artemis.utils.ConfigurationHelper;
 import org.apache.activemq.artemis.utils.ExecutorFactory;
 import org.apache.activemq.artemis.utils.VersionLoader;
-
-import javax.security.auth.Subject;
+import org.jboss.logging.Logger;
 
 import static org.apache.activemq.artemis.core.protocol.stomp.ActiveMQStompProtocolMessageBundle.BUNDLE;
 
 public final class StompConnection implements RemotingConnection {
+
+   private static final Logger logger = Logger.getLogger(StompConnection.class);
 
    protected static final String CONNECTION_ID_PROP = "__AMQ_CID";
    private static final String SERVER_NAME = "ActiveMQ-Artemis/" + VersionLoader.getVersion().getFullVersion() +
@@ -269,14 +272,12 @@ public final class StompConnection implements RemotingConnection {
    }
 
    public void autoCreateDestinationIfPossible(String queue, RoutingType routingType) throws ActiveMQStompException {
-      ServerSession session = getSession().getCoreSession();
-
       try {
+         ServerSession session = getSession().getCoreSession();
          SimpleString simpleQueue = SimpleString.toSimpleString(queue);
          AddressInfo addressInfo = manager.getServer().getAddressInfo(simpleQueue);
          AddressSettings addressSettings = manager.getServer().getAddressSettingsRepository().getMatch(queue);
          RoutingType effectiveAddressRoutingType = routingType == null ? addressSettings.getDefaultAddressRoutingType() : routingType;
-         boolean checkAnycast = false;
          /**
           * If the address doesn't exist then it is created if possible.
           * If the address does exist but doesn't support the routing-type then the address is updated if possible.
@@ -285,8 +286,6 @@ public final class StompConnection implements RemotingConnection {
             if (addressSettings.isAutoCreateAddresses()) {
                session.createAddress(simpleQueue, effectiveAddressRoutingType, true);
             }
-
-            checkAnycast = true;
          } else if (!addressInfo.getRoutingTypes().contains(effectiveAddressRoutingType)) {
             if (addressSettings.isAutoCreateAddresses()) {
                EnumSet<RoutingType> routingTypes = EnumSet.noneOf(RoutingType.class);
@@ -296,12 +295,10 @@ public final class StompConnection implements RemotingConnection {
                routingTypes.add(effectiveAddressRoutingType);
                manager.getServer().updateAddressInfo(simpleQueue, routingTypes);
             }
-
-            checkAnycast = true;
          }
 
          // only auto create the queue if the address is ANYCAST
-         if (checkAnycast && effectiveAddressRoutingType == RoutingType.ANYCAST && addressSettings.isAutoCreateQueues()) {
+         if (effectiveAddressRoutingType == RoutingType.ANYCAST && addressSettings.isAutoCreateQueues() && manager.getServer().locateQueue(simpleQueue) == null) {
             session.createQueue(simpleQueue, simpleQueue, routingType == null ? addressSettings.getDefaultQueueRoutingType() : routingType, null, false, true, true);
          }
       } catch (ActiveMQQueueExistsException e) {
@@ -335,15 +332,11 @@ public final class StompConnection implements RemotingConnection {
          if (destroyed) {
             return;
          }
-      }
 
-      destroyed = true;
+         destroyed = true;
+      }
 
       internalClose();
-
-      synchronized (sendLock) {
-         callClosingListeners();
-      }
    }
 
    public Acceptor getAcceptorUsed() {
@@ -351,9 +344,17 @@ public final class StompConnection implements RemotingConnection {
    }
 
    private void internalClose() {
+      if (frameHandler != null) {
+         frameHandler.disconnect();
+      }
+
       transportConnection.close();
 
       manager.cleanup(this);
+
+      synchronized (sendLock) {
+         callClosingListeners();
+      }
    }
 
    @Override
@@ -372,14 +373,8 @@ public final class StompConnection implements RemotingConnection {
 
       ActiveMQServerLogger.LOGGER.connectionFailureDetected(me.getMessage(), me.getType());
 
-      if (frameHandler != null) {
-         frameHandler.disconnect();
-      }
-
       // Then call the listeners
       callFailureListeners(me);
-
-      callClosingListeners();
 
       internalClose();
    }
@@ -439,8 +434,16 @@ public final class StompConnection implements RemotingConnection {
       return login;
    }
 
+   public void setLogin(String login) {
+      this.login = login;
+   }
+
    public String getPasscode() {
       return passcode;
+   }
+
+   public void setPasscode(String passcode) {
+      this.passcode = passcode;
    }
 
    @Override
@@ -582,28 +585,40 @@ public final class StompConnection implements RemotingConnection {
       }
    }
 
-   public void sendFrame(StompFrame frame, StompPostReceiptFunction function) {
-      manager.sendReply(this, frame, function);
+   public void logFrame(StompFrame request, boolean in) {
+      if (logger.isDebugEnabled()) {
+         StringBuilder message = new StringBuilder()
+            .append("STOMP(")
+            .append(getRemoteAddress())
+            .append(", ")
+            .append(this.getID())
+            .append("):");
+
+         if (in) {
+            message.append(" IN << ");
+         } else {
+            message.append("OUT >> ");
+         }
+
+         message.append(request);
+
+         logger.debug(message.toString());
+      }
    }
 
-   public boolean validateUser(final String login, final String pass, final RemotingConnection connection) {
-      this.valid = manager.validateUser(login, pass, connection);
-      if (valid) {
-         this.login = login;
-         this.passcode = pass;
-      }
-      return valid;
+   public void sendFrame(StompFrame frame, StompPostReceiptFunction function) {
+      manager.sendReply(this, frame, function);
    }
 
    public CoreMessage createServerMessage() {
       return manager.createServerMessage();
    }
 
-   public StompSession getSession() throws ActiveMQStompException {
+   public StompSession getSession() throws ActiveMQStompException, ActiveMQSecurityException {
       return getSession(null);
    }
 
-   public StompSession getSession(String txID) throws ActiveMQStompException {
+   public StompSession getSession(String txID) throws ActiveMQStompException, ActiveMQSecurityException {
       StompSession session = null;
       try {
          if (txID == null) {
@@ -611,6 +626,8 @@ public final class StompConnection implements RemotingConnection {
          } else {
             session = manager.getTransactedSession(this, txID);
          }
+      } catch (ActiveMQSecurityException e) {
+         throw e;
       } catch (Exception e) {
          throw BUNDLE.errorGetSession(e).setHandler(frameHandler);
       }
@@ -625,15 +642,15 @@ public final class StompConnection implements RemotingConnection {
    }
 
    protected void sendServerMessage(ICoreMessage message, String txID) throws ActiveMQStompException {
-      StompSession stompSession = getSession(txID);
-
-      if (stompSession.isNoLocal()) {
-         message.putStringProperty(CONNECTION_ID_PROP, getID().toString());
-      }
-      if (isEnableMessageID()) {
-         message.putStringProperty("amqMessageId", "STOMP" + message.getMessageID());
-      }
       try {
+         StompSession stompSession = getSession(txID);
+
+         if (stompSession.isNoLocal()) {
+            message.putStringProperty(CONNECTION_ID_PROP, getID().toString());
+         }
+         if (isEnableMessageID()) {
+            message.putStringProperty("amqMessageId", "STOMP" + message.getMessageID());
+         }
          if (minLargeMessageSize == -1 || (message.getBodyBuffer().writerIndex() < minLargeMessageSize)) {
             stompSession.sendInternal(message, false);
          } else {
@@ -778,6 +795,14 @@ public final class StompConnection implements RemotingConnection {
 
       if (stompListener != null) {
          stompListener.replySent(frame);
+      }
+
+      if (frame.getCommand().equals(Stomp.Responses.ERROR)) {
+         String message = "no message header";
+         if (frame.hasHeader(Stomp.Headers.Error.MESSAGE)) {
+            message = frame.getHeader(Stomp.Headers.Error.MESSAGE);
+         }
+         ActiveMQStompProtocolLogger.LOGGER.sentErrorToClient(getTransportConnection().getRemoteAddress(), message);
       }
 
    }

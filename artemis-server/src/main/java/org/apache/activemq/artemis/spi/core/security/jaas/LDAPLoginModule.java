@@ -84,8 +84,9 @@ public class LDAPLoginModule implements LoginModule {
    private static final String SASL_LOGIN_CONFIG_SCOPE = "saslLoginConfigScope";
    private static final String AUTHENTICATE_USER = "authenticateUser";
    private static final String REFERRAL = "referral";
-   private static final String MASK_PASSWORD = "maskPassword";
    private static final String PASSWORD_CODEC = "passwordCodec";
+   private static final String CONNECTION_POOL = "connectionPool";
+   private static final String CONNECTION_TIMEOUT = "connectionTimeout";
 
    protected DirContext context;
 
@@ -126,14 +127,19 @@ public class LDAPLoginModule implements LoginModule {
                                        new LDAPLoginProperty(USER_ROLE_NAME, (String) options.get(USER_ROLE_NAME)),
                                        new LDAPLoginProperty(EXPAND_ROLES, (String) options.get(EXPAND_ROLES)),
                                        new LDAPLoginProperty(EXPAND_ROLES_MATCHING, (String) options.get(EXPAND_ROLES_MATCHING)),
-                                       new LDAPLoginProperty(REFERRAL, (String) options.get(REFERRAL))};
+                                       new LDAPLoginProperty(PASSWORD_CODEC, (String) options.get(PASSWORD_CODEC)),
+                                       new LDAPLoginProperty(SASL_LOGIN_CONFIG_SCOPE, (String) options.get(SASL_LOGIN_CONFIG_SCOPE)),
+                                       new LDAPLoginProperty(AUTHENTICATE_USER, (String) options.get(AUTHENTICATE_USER)),
+                                       new LDAPLoginProperty(REFERRAL, (String) options.get(REFERRAL)),
+                                       new LDAPLoginProperty(CONNECTION_POOL, (String) options.get(CONNECTION_POOL)),
+                                       new LDAPLoginProperty(CONNECTION_TIMEOUT, (String) options.get(CONNECTION_TIMEOUT))};
 
       if (isLoginPropertySet(AUTHENTICATE_USER)) {
          authenticateUser = Boolean.valueOf(getLDAPPropertyValue(AUTHENTICATE_USER));
       }
       isRoleAttributeSet = isLoginPropertySet(ROLE_NAME);
       roleAttributeName = getLDAPPropertyValue(ROLE_NAME);
-      codecClass = (String) options.get(PASSWORD_CODEC);
+      codecClass = getLDAPPropertyValue(PASSWORD_CODEC);
    }
 
    private String getPlainPassword(String password) {
@@ -218,6 +224,7 @@ public class LDAPLoginModule implements LoginModule {
    private void clear() {
       username = null;
       userAuthenticated = false;
+      closeContext();
    }
 
    @Override
@@ -473,6 +480,12 @@ public class LDAPLoginModule implements LoginModule {
          while (!pendingNameExpansion.isEmpty()) {
             String name = pendingNameExpansion.remove();
             final String expandFilter = expandRolesMatchingFormat.format(new String[]{name});
+            if (logger.isDebugEnabled()) {
+               logger.debug("Get 'expanded' user roles.");
+               logger.debug("Looking for the 'expanded' user roles in LDAP with ");
+               logger.debug("  base DN: " + getLDAPPropertyValue(ROLE_BASE));
+               logger.debug("  filter: " + expandFilter);
+            }
             try {
                results = Subject.doAs(brokerGssapiIdentity, (PrivilegedExceptionAction< NamingEnumeration<SearchResult>>) () -> context.search(getLDAPPropertyValue(ROLE_BASE), expandFilter, constraints));
             } catch (PrivilegedActionException e) {
@@ -577,6 +590,12 @@ public class LDAPLoginModule implements LoginModule {
             env.put(Context.SECURITY_PROTOCOL, getLDAPPropertyValue(CONNECTION_PROTOCOL));
             env.put(Context.PROVIDER_URL, getLDAPPropertyValue(CONNECTION_URL));
             env.put(Context.SECURITY_AUTHENTICATION, getLDAPPropertyValue(AUTHENTICATION));
+            if (isLoginPropertySet(CONNECTION_POOL)) {
+               env.put("com.sun.jndi.ldap.connect.pool", getLDAPPropertyValue(CONNECTION_POOL));
+            }
+            if (isLoginPropertySet(CONNECTION_TIMEOUT)) {
+               env.put("com.sun.jndi.ldap.connect.timeout", getLDAPPropertyValue(CONNECTION_TIMEOUT));
+            }
 
             // handle LDAP referrals
             // valid values are "throw", "ignore" and "follow"

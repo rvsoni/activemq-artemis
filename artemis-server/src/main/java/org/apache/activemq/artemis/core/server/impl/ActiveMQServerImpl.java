@@ -66,6 +66,7 @@ import org.apache.activemq.artemis.core.config.DivertConfiguration;
 import org.apache.activemq.artemis.core.config.HAPolicyConfiguration;
 import org.apache.activemq.artemis.core.config.StoreConfiguration;
 import org.apache.activemq.artemis.core.config.impl.ConfigurationImpl;
+import org.apache.activemq.artemis.core.config.impl.LegacyJMSConfiguration;
 import org.apache.activemq.artemis.core.config.storage.DatabaseStorageConfiguration;
 import org.apache.activemq.artemis.core.deployers.impl.FileConfigurationParser;
 import org.apache.activemq.artemis.core.filter.Filter;
@@ -449,10 +450,10 @@ public class ActiveMQServerImpl implements ActiveMQServer {
             manager = JdbcNodeManager.with(dbConf, scheduledPool, executorFactory, shutdownOnCriticalIO);
          } else if (haType == null || haType == HAPolicyConfiguration.TYPE.LIVE_ONLY) {
             if (logger.isDebugEnabled()) {
-               logger.debug("Detected no Shared Store HA options on JDBC store: will use InVMNodeManager");
+               logger.debug("Detected no Shared Store HA options on JDBC store");
             }
             //LIVE_ONLY should be the default HA option when HA isn't configured
-            manager = new InVMNodeManager(replicatingBackup);
+            manager = new FileLockNodeManager(directory, replicatingBackup, configuration.getJournalLockAcquisitionTimeout());
          } else {
             throw new IllegalArgumentException("JDBC persistence allows only Shared Store HA options");
          }
@@ -2541,15 +2542,19 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          ActiveMQServerLogger.LOGGER.deployQueue(config.getName(), config.getAddress());
          AddressSettings as = addressSettingsRepository.getMatch(config.getAddress());
          // determine if there is an address::queue match; update it if so
+         int maxConsumerAddressSetting = as.getDefaultMaxConsumers();
+         int maxConsumerQueueConfig = config.getMaxConsumers();
+         int maxConsumer = (config.isMaxConsumerConfigured()) ? maxConsumerQueueConfig : maxConsumerAddressSetting;
          if (locateQueue(queueName) != null && locateQueue(queueName).getAddress().toString().equals(config.getAddress())) {
-            updateQueue(config.getName(), config.getRoutingType(), config.getMaxConsumers(), config.getPurgeOnNoConsumers(),
-                        config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive());
+            updateQueue(config.getName(), config.getRoutingType(), maxConsumer, config.getPurgeOnNoConsumers(),
+                        config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive(),
+                        config.getUser());
          } else {
             // if the address::queue doesn't exist then create it
             try {
                createQueue(SimpleString.toSimpleString(config.getAddress()), config.getRoutingType(),
                            queueName, SimpleString.toSimpleString(config.getFilterString()), SimpleString.toSimpleString(config.getUser()),
-                           config.isDurable(),false,false,false,false,config.getMaxConsumers(),config.getPurgeOnNoConsumers(),
+                           config.isDurable(),false,false,false,false,maxConsumer,config.getPurgeOnNoConsumers(),
                            config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive(),
                            config.isLastValue() == null ? as.isDefaultLastValueQueue() : config.isLastValue(), true);
             } catch (ActiveMQQueueExistsException e) {
@@ -2940,6 +2945,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       return queue;
    }
 
+   @Deprecated
    @Override
    public Queue updateQueue(String name,
                             RoutingType routingType,
@@ -2948,13 +2954,24 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       return updateQueue(name, routingType, maxConsumers, purgeOnNoConsumers, null);
    }
 
+   @Deprecated
    @Override
    public Queue updateQueue(String name,
                             RoutingType routingType,
                             Integer maxConsumers,
                             Boolean purgeOnNoConsumers,
                             Boolean exclusive) throws Exception {
-      final QueueBinding queueBinding = this.postOffice.updateQueue(new SimpleString(name), routingType, maxConsumers, purgeOnNoConsumers, exclusive);
+      return updateQueue(name, routingType, maxConsumers, purgeOnNoConsumers, null, null);
+   }
+
+   @Override
+   public Queue updateQueue(String name,
+                            RoutingType routingType,
+                            Integer maxConsumers,
+                            Boolean purgeOnNoConsumers,
+                            Boolean exclusive,
+                            String user) throws Exception {
+      final QueueBinding queueBinding = this.postOffice.updateQueue(new SimpleString(name), routingType, maxConsumers, purgeOnNoConsumers, exclusive, SimpleString.toSimpleString(user));
       if (queueBinding != null) {
          final Queue queue = queueBinding.getQueue();
          return queue;
@@ -3135,6 +3152,9 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       public void reload(URL uri) throws Exception {
          if (isActive()) {
             Configuration config = new FileConfigurationParser().parseMainConfig(uri.openStream());
+            LegacyJMSConfiguration legacyJMSConfiguration = new LegacyJMSConfiguration(config);
+            legacyJMSConfiguration.parseConfiguration(uri.openStream());
+
             ActiveMQServerLogger.LOGGER.reloadingConfiguration("security");
             securityRepository.swap(config.getSecurityRoles().entrySet());
             configuration.setSecurityRoles(config.getSecurityRoles());
