@@ -33,7 +33,7 @@ import org.apache.activemq.artemis.core.io.DummyCallback;
 import org.apache.activemq.artemis.core.io.IOCallback;
 import org.apache.activemq.artemis.core.io.SequentialFile;
 import org.apache.activemq.artemis.core.journal.impl.SimpleWaitIOCallback;
-import org.apache.activemq.artemis.jlibaio.LibaioFile;
+import org.apache.activemq.artemis.nativo.jlibaio.LibaioFile;
 import org.apache.activemq.artemis.journal.ActiveMQJournalLogger;
 import org.apache.activemq.artemis.utils.ReusableLatch;
 import org.jboss.logging.Logger;
@@ -85,11 +85,7 @@ public class AIOSequentialFile extends AbstractSequentialFile {
 
    @Override
    public int calculateBlockStart(final int position) {
-      int alignment = factory.getAlignment();
-
-      int pos = (position / alignment + (position % alignment != 0 ? 1 : 0)) * alignment;
-
-      return pos;
+      return factory.calculateBlockSize(position);
    }
 
    @Override
@@ -233,6 +229,33 @@ public class AIOSequentialFile extends AbstractSequentialFile {
       }
    }
 
+   @Override
+   public void blockingWriteDirect(ByteBuffer bytes,boolean sync, boolean releaseBuffer) throws Exception {
+      if (logger.isTraceEnabled()) {
+         logger.trace("Write Direct, Sync: true File: " + getFileName());
+      }
+
+      final SimpleWaitIOCallback completion = new SimpleWaitIOCallback();
+
+      try {
+         checkOpened();
+      } catch (Exception e) {
+         ActiveMQJournalLogger.LOGGER.warn(e.getMessage(), e);
+         completion.onError(-1, e.getMessage());
+         return;
+      }
+
+      final int bytesToWrite = factory.calculateBlockSize(bytes.limit());
+
+      final long positionToWrite = position.getAndAdd(bytesToWrite);
+
+      final AIOSequentialFileFactory.AIOSequentialCallback runnableCallback = getCallback(completion, bytes, releaseBuffer);
+      runnableCallback.initWrite(positionToWrite, bytesToWrite);
+      runnableCallback.run();
+
+      completion.waitCompletion();
+   }
+
    /**
     * Note: Parameter sync is not used on AIO
     */
@@ -256,8 +279,14 @@ public class AIOSequentialFile extends AbstractSequentialFile {
    }
 
    AIOSequentialFileFactory.AIOSequentialCallback getCallback(IOCallback originalCallback, ByteBuffer buffer) {
+      return getCallback(originalCallback, buffer, true);
+   }
+
+   AIOSequentialFileFactory.AIOSequentialCallback getCallback(IOCallback originalCallback,
+                                                              ByteBuffer buffer,
+                                                              boolean releaseBuffer) {
       AIOSequentialFileFactory.AIOSequentialCallback callback = aioFactory.getCallback();
-      callback.init(this.nextWritingSequence.getAndIncrement(), originalCallback, aioFile, this, buffer);
+      callback.init(this.nextWritingSequence.getAndIncrement(), originalCallback, aioFile, this, buffer, releaseBuffer);
       pendingCallbacks.countUp();
       return callback;
    }

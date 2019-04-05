@@ -62,6 +62,7 @@ import org.apache.activemq.artemis.core.transaction.TransactionOperation;
 import org.apache.activemq.artemis.core.transaction.TransactionPropertyIndexes;
 import org.apache.activemq.artemis.utils.FutureLatch;
 import org.apache.activemq.artemis.utils.actors.ArtemisExecutor;
+import org.apache.activemq.artemis.utils.runnables.AtomicRunnable;
 import org.jboss.logging.Logger;
 
 /**
@@ -139,6 +140,21 @@ public class PagingStoreImpl implements PagingStore {
                           final AddressSettings addressSettings,
                           final ArtemisExecutor executor,
                           final boolean syncNonTransactional) {
+      this(address, scheduledExecutor, syncTimeout, pagingManager, storageManager, fileFactory, storeFactory, storeName, addressSettings, executor, executor, syncNonTransactional);
+   }
+
+   public PagingStoreImpl(final SimpleString address,
+                          final ScheduledExecutorService scheduledExecutor,
+                          final long syncTimeout,
+                          final PagingManager pagingManager,
+                          final StorageManager storageManager,
+                          final SequentialFileFactory fileFactory,
+                          final PagingStoreFactory storeFactory,
+                          final SimpleString storeName,
+                          final AddressSettings addressSettings,
+                          final ArtemisExecutor executor,
+                          final ArtemisExecutor ioExecutor,
+                          final boolean syncNonTransactional) {
       if (pagingManager == null) {
          throw new IllegalStateException("Paging Manager can't be null");
       }
@@ -171,7 +187,7 @@ public class PagingStoreImpl implements PagingStore {
       this.syncNonTransactional = syncNonTransactional;
 
       if (scheduledExecutor != null && syncTimeout > 0) {
-         this.syncTimer = new PageSyncTimer(this, scheduledExecutor, executor, syncTimeout);
+         this.syncTimer = new PageSyncTimer(this, scheduledExecutor, ioExecutor, syncTimeout);
       } else {
          this.syncTimer = null;
       }
@@ -274,22 +290,17 @@ public class PagingStoreImpl implements PagingStore {
 
    @Override
    public boolean isPaging() {
-      lock.readLock().lock();
-
-      try {
-         if (addressFullMessagePolicy == AddressFullMessagePolicy.BLOCK) {
-            return false;
-         }
-         if (addressFullMessagePolicy == AddressFullMessagePolicy.FAIL) {
-            return isFull();
-         }
-         if (addressFullMessagePolicy == AddressFullMessagePolicy.DROP) {
-            return isFull();
-         }
-         return paging;
-      } finally {
-         lock.readLock().unlock();
+      AddressFullMessagePolicy policy = this.addressFullMessagePolicy;
+      if (policy == AddressFullMessagePolicy.BLOCK) {
+         return false;
       }
+      if (policy == AddressFullMessagePolicy.FAIL) {
+         return isFull();
+      }
+      if (policy == AddressFullMessagePolicy.DROP) {
+         return isFull();
+      }
+      return paging;
    }
 
    @Override
@@ -482,12 +493,7 @@ public class PagingStoreImpl implements PagingStore {
 
       lock.readLock().lock();
       try {
-         // I'm not calling isPaging() here because
-         // isPaging will perform extra steps.
-         // at this context it doesn't really matter what policy we are using
-         // since this method is only called when paging.
-         // Besides that isPaging() will perform lock.readLock() again which is not needed here
-         // for that reason the attribute is used directly here.
+         // I'm not calling isPaging() here because i need to be atomic and hold a lock.
          if (paging) {
             return false;
          }
@@ -641,53 +647,35 @@ public class PagingStoreImpl implements PagingStore {
 
    }
 
-   private final Queue<OverSizedRunnable> onMemoryFreedRunnables = new ConcurrentLinkedQueue<>();
+   private final Queue<Runnable> onMemoryFreedRunnables = new ConcurrentLinkedQueue<>();
 
-   private class MemoryFreedRunnablesExecutor implements Runnable {
+   private void memoryReleased() {
+      Runnable runnable;
 
-      @Override
-      public void run() {
-         Runnable runnable;
-
-         while ((runnable = onMemoryFreedRunnables.poll()) != null) {
-            runnable.run();
-         }
-      }
-   }
-
-   private final Runnable memoryFreedRunnablesExecutor = new MemoryFreedRunnablesExecutor();
-
-   // To be used when the memory is oversized either by local settings or global settings on blocking addresses
-   private static final class OverSizedRunnable implements Runnable {
-
-      private final AtomicBoolean ran = new AtomicBoolean(false);
-
-      private final Runnable runnable;
-
-      private OverSizedRunnable(final Runnable runnable) {
-         this.runnable = runnable;
-      }
-
-      @Override
-      public void run() {
-         if (ran.compareAndSet(false, true)) {
-            runnable.run();
-         }
+      while ((runnable = onMemoryFreedRunnables.poll()) != null) {
+         runnable.run();
       }
    }
 
    @Override
    public boolean checkMemory(final Runnable runWhenAvailable) {
+      return checkMemory(true, runWhenAvailable);
+   }
+
+   @Override
+   public boolean checkMemory(boolean runOnFailure, final Runnable runWhenAvailable) {
 
       if (addressFullMessagePolicy == AddressFullMessagePolicy.FAIL && (maxSize != -1 || usingGlobalMaxSize || pagingManager.isDiskFull())) {
          if (isFull()) {
+            if (runOnFailure && runWhenAvailable != null) {
+               onMemoryFreedRunnables.add(AtomicRunnable.checkAtomic(runWhenAvailable));
+            }
             return false;
          }
       } else if (pagingManager.isDiskFull() || addressFullMessagePolicy == AddressFullMessagePolicy.BLOCK && (maxSize != -1 || usingGlobalMaxSize)) {
          if (pagingManager.isDiskFull() || maxSize > 0 && sizeInBytes.get() > maxSize || pagingManager.isGlobalFull()) {
-            OverSizedRunnable ourRunnable = new OverSizedRunnable(runWhenAvailable);
 
-            onMemoryFreedRunnables.add(ourRunnable);
+            onMemoryFreedRunnables.add(AtomicRunnable.checkAtomic(runWhenAvailable));
 
             // We check again to avoid a race condition where the size can come down just after the element
             // has been added, but the check to execute was done before the element was added
@@ -695,7 +683,7 @@ public class PagingStoreImpl implements PagingStore {
             // MUCH better performance in a highly concurrent environment
             if (!pagingManager.isGlobalFull() && (sizeInBytes.get() <= maxSize || maxSize < 0)) {
                // run it now
-               ourRunnable.run();
+               runWhenAvailable.run();
             } else {
                if (usingGlobalMaxSize || pagingManager.isDiskFull()) {
                   pagingManager.addBlockedStore(this);
@@ -710,12 +698,13 @@ public class PagingStoreImpl implements PagingStore {
                   blocking.set(true);
                }
             }
-
             return true;
          }
       }
 
-      runWhenAvailable.run();
+      if (runWhenAvailable != null) {
+         runWhenAvailable.run();
+      }
 
       return true;
    }
@@ -729,7 +718,7 @@ public class PagingStoreImpl implements PagingStore {
          ActiveMQServerLogger.LOGGER.negativeAddressSize(newSize, address.toString());
       }
 
-      if (addressFullMessagePolicy == AddressFullMessagePolicy.BLOCK) {
+      if (addressFullMessagePolicy == AddressFullMessagePolicy.BLOCK || addressFullMessagePolicy == AddressFullMessagePolicy.FAIL) {
          if (usingGlobalMaxSize && !globalFull || maxSize != -1) {
             checkReleaseMemory(globalFull, newSize);
          }
@@ -739,7 +728,7 @@ public class PagingStoreImpl implements PagingStore {
          if (size > 0) {
             if (maxSize != -1 && newSize > maxSize || globalFull) {
                if (startPaging()) {
-                  ActiveMQServerLogger.LOGGER.pageStoreStart(storeName, newSize, maxSize);
+                  ActiveMQServerLogger.LOGGER.pageStoreStart(storeName, newSize, maxSize, pagingManager.getGlobalSize());
                }
             }
          }
@@ -756,7 +745,7 @@ public class PagingStoreImpl implements PagingStore {
    public boolean checkReleaseMemory(boolean globalOversized, long newSize) {
       if (!globalOversized && (newSize <= maxSize || maxSize < 0)) {
          if (!onMemoryFreedRunnables.isEmpty()) {
-            executor.execute(memoryFreedRunnablesExecutor);
+            executor.execute(this::memoryReleased);
             if (blocking.get()) {
                ActiveMQServerLogger.LOGGER.unblockingMessageProduction(address, sizeInBytes.get(), maxSize);
                blocking.set(false);
@@ -785,7 +774,7 @@ public class PagingStoreImpl implements PagingStore {
             if (!printedDropMessagesWarning) {
                printedDropMessagesWarning = true;
 
-               ActiveMQServerLogger.LOGGER.pageStoreDropMessages(storeName, sizeInBytes.get(), maxSize);
+               ActiveMQServerLogger.LOGGER.pageStoreDropMessages(storeName, sizeInBytes.get(), maxSize, pagingManager.getGlobalSize());
             }
 
             if (message.isLargeMessage()) {
@@ -987,6 +976,13 @@ public class PagingStoreImpl implements PagingStore {
       pgOper.pageTransaction.increment(listCtx.getNumberOfDurableQueues(), listCtx.getNumberOfNonDurableQueues());
 
       return;
+   }
+
+   @Override
+   public void destroy() throws Exception {
+      if (fileFactory != null) {
+         storeFactory.removeFileFactory(fileFactory);
+      }
    }
 
    private static class FinishPageMessageOperation implements TransactionOperation {

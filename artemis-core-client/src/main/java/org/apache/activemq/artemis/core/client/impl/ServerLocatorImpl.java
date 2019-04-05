@@ -278,8 +278,8 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
       AccessController.doPrivileged(new PrivilegedAction<Object>() {
          @Override
          public Object run() {
-            loadBalancingPolicy = (ConnectionLoadBalancingPolicy) ClassloadingUtil.newInstanceFromClassLoader(connectionLoadBalancingPolicyClassName);
-            return null;
+               loadBalancingPolicy = (ConnectionLoadBalancingPolicy) ClassloadingUtil.newInstanceFromClassLoader(ServerLocatorImpl.class, connectionLoadBalancingPolicyClassName);
+               return null;
          }
       });
    }
@@ -317,8 +317,7 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
 
    private static DiscoveryGroup createDiscoveryGroup(String nodeID,
                                                       DiscoveryGroupConfiguration config) throws Exception {
-      DiscoveryGroup group = new DiscoveryGroup(nodeID, config.getName(), config.getRefreshTimeout(), config.getBroadcastEndpointFactory(), null);
-      return group;
+      return new DiscoveryGroup(nodeID, config.getName(), config.getRefreshTimeout(), config.getBroadcastEndpointFactory(), null);
    }
 
    private ServerLocatorImpl(final Topology topology,
@@ -333,7 +332,7 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
 
       this.discoveryGroupConfiguration = discoveryGroupConfiguration;
 
-      this.initialConnectors = transportConfigs != null ? transportConfigs : null;
+      this.initialConnectors = transportConfigs;
 
       this.nodeID = UUIDGenerator.getInstance().generateStringUUID();
 
@@ -672,8 +671,7 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
       }
       if (topologyMember.getLive() == null && topologyMember.getBackup() != null) {
          // This shouldn't happen, however I wanted this to consider all possible cases
-         ClientSessionFactoryInternal factory = (ClientSessionFactoryInternal) createSessionFactory(topologyMember.getBackup());
-         return factory;
+         return (ClientSessionFactoryInternal) createSessionFactory(topologyMember.getBackup());
       }
       // it shouldn't happen
       return null;
@@ -1854,8 +1852,7 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
    }
 
    private Object writeReplace() throws ObjectStreamException {
-      ServerLocatorImpl clone = new ServerLocatorImpl(this);
-      return clone;
+      return new ServerLocatorImpl(this);
    }
 
    public boolean isReceivedTopology() {
@@ -1888,7 +1885,7 @@ public final class ServerLocatorImpl implements ServerLocatorInternal, Discovery
 
             String[] arrayInterceptor = interceptorList.split(",");
             for (String strValue : arrayInterceptor) {
-               Interceptor interceptor = (Interceptor) ClassloadingUtil.newInstanceFromClassLoader(strValue.trim());
+               Interceptor interceptor = (Interceptor) ClassloadingUtil.newInstanceFromClassLoader(ServerLocatorImpl.class, strValue.trim());
                interceptors.add(interceptor);
             }
             return null;

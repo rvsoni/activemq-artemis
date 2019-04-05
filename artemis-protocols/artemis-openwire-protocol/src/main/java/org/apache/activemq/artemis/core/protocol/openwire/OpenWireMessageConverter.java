@@ -83,7 +83,7 @@ public final class OpenWireMessageConverter {
    private static final SimpleString AMQ_MSG_COMMAND_ID = new SimpleString(AMQ_PREFIX + "COMMAND_ID");
    private static final SimpleString AMQ_MSG_DATASTRUCTURE = new SimpleString(AMQ_PREFIX + "DATASTRUCTURE");
    private static final SimpleString AMQ_MSG_GROUP_ID = org.apache.activemq.artemis.api.core.Message.HDR_GROUP_ID;
-   private static final SimpleString AMQ_MSG_GROUP_SEQUENCE = new SimpleString(AMQ_PREFIX + "GROUP_SEQUENCE");
+   private static final SimpleString AMQ_MSG_GROUP_SEQUENCE = org.apache.activemq.artemis.api.core.Message.HDR_GROUP_SEQUENCE;
    private static final SimpleString AMQ_MSG_MESSAGE_ID = new SimpleString(AMQ_PREFIX + "MESSAGE_ID");
    private static final SimpleString AMQ_MSG_ORIG_DESTINATION =  new SimpleString(AMQ_PREFIX + "ORIG_DESTINATION");
    private static final SimpleString AMQ_MSG_ORIG_TXID = new SimpleString(AMQ_PREFIX + "ORIG_TXID");
@@ -173,9 +173,9 @@ public final class OpenWireMessageConverter {
       }
       final String groupId = messageSend.getGroupID();
       if (groupId != null) {
-         coreMessage.putStringProperty(AMQ_MSG_GROUP_ID, coreMessageObjectPools.getGroupIdStringSimpleStringPool().getOrCreate(groupId));
+         coreMessage.setGroupID(groupId);
       }
-      coreMessage.putIntProperty(AMQ_MSG_GROUP_SEQUENCE, messageSend.getGroupSequence());
+      coreMessage.setGroupSequence(messageSend.getGroupSequence());
 
       final MessageId messageId = messageSend.getMessageId();
 
@@ -614,11 +614,7 @@ public final class OpenWireMessageConverter {
          amqMsg.setGroupID(groupId);
       }
 
-      Integer groupSequence = (Integer) coreMessage.getObjectProperty(AMQ_MSG_GROUP_SEQUENCE);
-      if (groupSequence == null) {
-         groupSequence = -1;
-      }
-      amqMsg.setGroupSequence(groupSequence);
+      amqMsg.setGroupSequence(coreMessage.getGroupSequence());
 
       final MessageId mid;
       final byte[] midBytes = (byte[]) coreMessage.getObjectProperty(AMQ_MSG_MESSAGE_ID);
@@ -786,7 +782,7 @@ public final class OpenWireMessageConverter {
                   MarshallingSupport.marshalDouble(dataOut, doubleVal);
                   break;
                case DataConstants.FLOAT:
-                  Float floatVal = Float.intBitsToFloat(buffer.readInt());
+                  float floatVal = Float.intBitsToFloat(buffer.readInt());
                   MarshallingSupport.marshalFloat(dataOut, floatVal);
                   break;
                case DataConstants.INT:

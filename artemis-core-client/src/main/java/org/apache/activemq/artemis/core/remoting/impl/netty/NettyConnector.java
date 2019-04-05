@@ -16,6 +16,12 @@
  */
 package org.apache.activemq.artemis.core.remoting.impl.netty;
 
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
+import javax.security.auth.Subject;
+import javax.security.auth.login.LoginContext;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
@@ -28,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedExceptionAction;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -40,13 +47,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLParameters;
-import javax.security.auth.Subject;
-import javax.security.auth.login.LoginContext;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -383,6 +385,7 @@ public class NettyConnector extends AbstractConnector {
          enabledProtocols = TransportConstants.DEFAULT_ENABLED_PROTOCOLS;
          verifyHost = TransportConstants.DEFAULT_VERIFY_HOST;
          trustAll = TransportConstants.DEFAULT_TRUST_ALL;
+         sniHost = TransportConstants.DEFAULT_SNIHOST_CONFIG;
          useDefaultSslContext = TransportConstants.DEFAULT_USE_DEFAULT_SSL_CONTEXT;
       }
 
@@ -571,6 +574,12 @@ public class NettyConnector extends AbstractConnector {
                   engine.setSSLParameters(sslParameters);
                }
 
+               if (sniHost != null) {
+                  SSLParameters sslParameters = engine.getSSLParameters();
+                  sslParameters.setServerNames(Arrays.asList(new SNIHostName(sniHost)));
+                  engine.setSSLParameters(sslParameters);
+               }
+
                SslHandler handler = new SslHandler(engine);
 
                pipeline.addLast("ssl", handler);
@@ -596,6 +605,7 @@ public class NettyConnector extends AbstractConnector {
             protocolManager.addChannelHandlers(pipeline);
 
             pipeline.addLast(new ActiveMQClientChannelHandler(channelGroup, handler, new Listener(), closeExecutor));
+            logger.debugf("Added ActiveMQClientChannelHandler to Channel with id = %s ", channel.id());
          }
       });
 
@@ -639,8 +649,8 @@ public class NettyConnector extends AbstractConnector {
       SSLEngine engine = Subject.doAs(subject, new PrivilegedExceptionAction<SSLEngine>() {
          @Override
          public SSLEngine run() {
-            if (verifyHost) {
-               return context.createSSLEngine(sniHost != null ? sniHost : host, port);
+            if (host != null && port != -1) {
+               return context.createSSLEngine(host, port);
             } else {
                return context.createSSLEngine();
             }
@@ -680,8 +690,8 @@ public class NettyConnector extends AbstractConnector {
       SSLEngine engine = Subject.doAs(subject, new PrivilegedExceptionAction<SSLEngine>() {
          @Override
          public SSLEngine run() {
-            if (verifyHost) {
-               return context.newEngine(alloc, sniHost != null ? sniHost : host, port);
+            if (host != null && port != -1) {
+               return context.newEngine(alloc, host, port);
             } else {
                return context.newEngine(alloc);
             }
@@ -729,6 +739,20 @@ public class NettyConnector extends AbstractConnector {
 
    @Override
    public Connection createConnection() {
+      return createConnection(null);
+   }
+
+   /**
+    * Create and return a connection from this connector.
+    * <p>
+    * This method must NOT throw an exception if it fails to create the connection
+    * (e.g. network is not available), in this case it MUST return null.<br>
+    * This version can be used for testing purposes.
+    *
+    * @param onConnect a callback that would be called right after {@link Bootstrap#connect()}
+    * @return The connection, or {@code null} if unable to create a connection (e.g. network is unavailable)
+    */
+   public final Connection createConnection(Consumer<ChannelFuture> onConnect) {
       if (channelClazz == null) {
          return null;
       }
@@ -750,7 +774,9 @@ public class NettyConnector extends AbstractConnector {
       } else {
          future = bootstrap.connect(remoteDestination);
       }
-
+      if (onConnect != null) {
+         onConnect.accept(future);
+      }
       future.awaitUninterruptibly();
 
       if (future.isSuccess()) {
@@ -762,7 +788,15 @@ public class NettyConnector extends AbstractConnector {
                if (handshakeFuture.isSuccess()) {
                   ChannelPipeline channelPipeline = ch.pipeline();
                   ActiveMQChannelHandler channelHandler = channelPipeline.get(ActiveMQChannelHandler.class);
-                  channelHandler.active = true;
+                  if (channelHandler != null) {
+                     channelHandler.active = true;
+                  } else {
+                     ch.close().awaitUninterruptibly();
+                     ActiveMQClientLogger.LOGGER.errorCreatingNettyConnection(
+                        new IllegalStateException("No ActiveMQChannelHandler has been found while connecting to " +
+                                                     remoteDestination + " from Channel with id = " + ch.id()));
+                     return null;
+                  }
                } else {
                   ch.close().awaitUninterruptibly();
                   ActiveMQClientLogger.LOGGER.errorCreatingNettyConnection(handshakeFuture.cause());
@@ -822,7 +856,15 @@ public class NettyConnector extends AbstractConnector {
          } else {
             ChannelPipeline channelPipeline = ch.pipeline();
             ActiveMQChannelHandler channelHandler = channelPipeline.get(ActiveMQChannelHandler.class);
-            channelHandler.active = true;
+            if (channelHandler != null) {
+               channelHandler.active = true;
+            } else {
+               ch.close().awaitUninterruptibly();
+               ActiveMQClientLogger.LOGGER.errorCreatingNettyConnection(
+                  new IllegalStateException("No ActiveMQChannelHandler has been found while connecting to " +
+                                               remoteDestination + " from Channel with id = " + ch.id()));
+               return null;
+            }
          }
 
          // No acceptor on a client connection
@@ -842,6 +884,14 @@ public class NettyConnector extends AbstractConnector {
    }
 
    // Public --------------------------------------------------------
+
+   public int getConnectTimeoutMillis() {
+      return connectTimeoutMillis;
+   }
+
+   public void setConnectTimeoutMillis(int connectTimeoutMillis) {
+      this.connectTimeoutMillis = connectTimeoutMillis;
+   }
 
    // Package protected ---------------------------------------------
 
@@ -1131,7 +1181,7 @@ public class NettyConnector extends AbstractConnector {
 
    @Override
    public boolean isEquivalent(Map<String, Object> configuration) {
-      Boolean httpUpgradeEnabled = ConfigurationHelper.getBooleanProperty(TransportConstants.HTTP_UPGRADE_ENABLED_PROP_NAME, TransportConstants.DEFAULT_HTTP_UPGRADE_ENABLED, configuration);
+      boolean httpUpgradeEnabled = ConfigurationHelper.getBooleanProperty(TransportConstants.HTTP_UPGRADE_ENABLED_PROP_NAME, TransportConstants.DEFAULT_HTTP_UPGRADE_ENABLED, configuration);
       if (httpUpgradeEnabled) {
          // we need to look at the activemqServerName to distinguish between ActiveMQ servers that could be proxied behind the same
          // HTTP upgrade handler in the Web server
@@ -1148,9 +1198,9 @@ public class NettyConnector extends AbstractConnector {
       //here we only check host and port because these two parameters
       //is sufficient to determine the target host
       String host = ConfigurationHelper.getStringProperty(TransportConstants.HOST_PROP_NAME, TransportConstants.DEFAULT_HOST, configuration);
-      Integer port = ConfigurationHelper.getIntProperty(TransportConstants.PORT_PROP_NAME, TransportConstants.DEFAULT_PORT, configuration);
+      int port = ConfigurationHelper.getIntProperty(TransportConstants.PORT_PROP_NAME, TransportConstants.DEFAULT_PORT, configuration);
 
-      if (!port.equals(this.port))
+      if (port != this.port)
          return false;
 
       if (host.equals(this.host))

@@ -19,11 +19,15 @@ package org.apache.activemq.artemis.protocol.amqp.proton;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQSecurityException;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.security.CheckType;
 import org.apache.activemq.artemis.core.security.SecurityAuth;
+import org.apache.activemq.artemis.core.server.RoutingContext;
+import org.apache.activemq.artemis.core.server.impl.AddressInfo;
+import org.apache.activemq.artemis.core.server.impl.RoutingContextImpl;
 import org.apache.activemq.artemis.core.transaction.Transaction;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPSessionCallback;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
@@ -34,6 +38,7 @@ import org.apache.activemq.artemis.protocol.amqp.logger.ActiveMQAMQPProtocolMess
 import org.apache.activemq.artemis.protocol.amqp.sasl.PlainSASLResult;
 import org.apache.activemq.artemis.protocol.amqp.sasl.SASLResult;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
+import org.apache.activemq.artemis.utils.runnables.AtomicRunnable;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.messaging.Rejected;
 import org.apache.qpid.proton.amqp.messaging.TerminusExpiryPolicy;
@@ -46,6 +51,9 @@ import org.apache.qpid.proton.engine.Delivery;
 import org.apache.qpid.proton.engine.Receiver;
 import org.jboss.logging.Logger;
 
+/**
+ * This is the equivalent for the ServerProducer
+ */
 public class ProtonServerReceiverContext extends ProtonInitializable implements ProtonDeliveryHandler {
 
    private static final Logger log = Logger.getLogger(ProtonServerReceiverContext.class);
@@ -60,6 +68,43 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
 
    protected final AMQPSessionCallback sessionSPI;
 
+   RoutingContext routingContext = new RoutingContextImpl(null);
+
+   /**
+    * We create this AtomicRunnable with setRan.
+    * This is because we always reuse the same instance.
+    * In case the creditRunnable was run, we reset and send it over.
+    * We set it as ran as the first one should always go through
+    */
+   protected final AtomicRunnable creditRunnable;
+
+   /**
+    * This Credit Runnable may be used in Mock tests to simulate the credit semantic here
+    */
+   public static AtomicRunnable createCreditRunnable(int refill,
+                                                     int threshold,
+                                                     Receiver receiver,
+                                                     AMQPConnectionContext connection) {
+      Runnable creditRunnable = () -> {
+
+         connection.requireInHandler();
+         if (receiver.getCredit() <= threshold) {
+            int topUp = refill - receiver.getCredit();
+            if (topUp > 0) {
+               // System.out.println("Sending " + topUp + " towards client");
+               receiver.flow(topUp);
+               connection.flush();
+            }
+         }
+      };
+      return new AtomicRunnable() {
+         @Override
+         public void atomicRun() {
+            connection.runNow(creditRunnable);
+         }
+      };
+   }
+
    /*
     The maximum number of credits we will allocate to clients.
     This number is also used by the broker when refresh client credits.
@@ -68,7 +113,6 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
 
    // Used by the broker to decide when to refresh clients credit.  This is not used when client requests credit.
    private final int minCreditRefresh;
-   private TerminusExpiryPolicy expiryPolicy;
 
    public ProtonServerReceiverContext(AMQPSessionCallback sessionSPI,
                                       AMQPConnectionContext connection,
@@ -80,11 +124,12 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
       this.sessionSPI = sessionSPI;
       this.amqpCredits = connection.getAmqpCredits();
       this.minCreditRefresh = connection.getAmqpLowCredits();
+      this.creditRunnable = createCreditRunnable(amqpCredits, minCreditRefresh, receiver, connection).setRan();
    }
 
    @Override
    public void onFlow(int credits, boolean drain) {
-      flow(Math.min(credits, amqpCredits), amqpCredits);
+      flow();
    }
 
    @Override
@@ -116,7 +161,6 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
             } catch (Exception e) {
                throw new ActiveMQAMQPInternalErrorException(e.getMessage(), e);
             }
-            expiryPolicy = target.getExpiryPolicy() != null ? target.getExpiryPolicy() : TerminusExpiryPolicy.LINK_DETACH;
             target.setAddress(address.toString());
          } else {
             // the target will have an address unless the remote is requesting an anonymous
@@ -127,7 +171,7 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
             if (address != null && !address.isEmpty()) {
                defRoutingType = getRoutingType(target.getCapabilities(), address);
                try {
-                  if (!sessionSPI.bindingQuery(address, defRoutingType)) {
+                  if (!sessionSPI.checkAddressAndAutocreateIfPossible(address, defRoutingType)) {
                      throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.addressDoesntExist();
                   }
                } catch (ActiveMQAMQPNotFoundException e) {
@@ -182,7 +226,7 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
             }
          }
       }
-      flow(amqpCredits, minCreditRefresh);
+      flow();
    }
 
    public RoutingType getRoutingType(Receiver receiver, SimpleString address) {
@@ -200,43 +244,64 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
             }
          }
       }
-
-      return sessionSPI.getDefaultRoutingType(address);
+      final AddressInfo addressInfo = sessionSPI.getAddress(address);
+      if (addressInfo != null && !addressInfo.getRoutingTypes().isEmpty()) {
+         if (addressInfo.getRoutingTypes().size() == 1 && addressInfo.getRoutingType() == RoutingType.MULTICAST) {
+            return RoutingType.MULTICAST;
+         }
+      }
+      RoutingType defaultRoutingType = sessionSPI.getDefaultRoutingType(address);
+      defaultRoutingType = defaultRoutingType == null ? ActiveMQDefaultConfiguration.getDefaultRoutingType() : defaultRoutingType;
+      return defaultRoutingType;
    }
 
    /*
-   * called when Proton receives a message to be delivered via a Delivery.
-   *
-   * This may be called more than once per deliver so we have to cache the buffer until we have received it all.
-   *
-   * */
+    * called when Proton receives a message to be delivered via a Delivery.
+    *
+    * This may be called more than once per deliver so we have to cache the buffer until we have received it all.
+    */
    @Override
    public void onMessage(Delivery delivery) throws ActiveMQAMQPException {
-      Receiver receiver;
-      try {
+      connection.requireInHandler();
+      Receiver receiver = ((Receiver) delivery.getLink());
 
-         if (!delivery.isReadable()) {
-            return;
-         }
-         if (delivery.isPartial()) {
-            return;
-         }
+      if (receiver.current() != delivery) {
+         return;
+      }
 
-         receiver = ((Receiver) delivery.getLink());
-
-         Transaction tx = null;
-
-         ReadableBuffer data = receiver.recv();
+      if (delivery.isAborted()) {
+         // Aborting implicitly remotely settles, so advance
+         // receiver to the next delivery and settle locally.
          receiver.advance();
+         delivery.settle();
 
-         if (delivery.getRemoteState() instanceof TransactionalState) {
-            TransactionalState txState = (TransactionalState) delivery.getRemoteState();
-            tx = this.sessionSPI.getTransaction(txState.getTxnId(), false);
+         // Replenish the credit if not doing a drain
+         if (!receiver.getDrain()) {
+            receiver.flow(1);
          }
 
-         sessionSPI.serverSend(this, tx, receiver, delivery, address, delivery.getMessageFormat(), data);
+         return;
+      } else if (delivery.isPartial()) {
+         return;
+      }
 
-         flow(amqpCredits, minCreditRefresh);
+      ReadableBuffer data = receiver.recv();
+      receiver.advance();
+      Transaction tx = null;
+
+      if (delivery.getRemoteState() instanceof TransactionalState) {
+         TransactionalState txState = (TransactionalState) delivery.getRemoteState();
+         tx = this.sessionSPI.getTransaction(txState.getTxnId(), false);
+      }
+
+      final Transaction txUsed = tx;
+
+      actualDelivery(delivery, receiver, data, txUsed);
+   }
+
+   private void actualDelivery(Delivery delivery, Receiver receiver, ReadableBuffer data, Transaction tx) {
+      try {
+         sessionSPI.serverSend(this, tx, receiver, delivery, address, delivery.getMessageFormat(), data, routingContext);
       } catch (Exception e) {
          log.warn(e.getMessage(), e);
          Rejected rejected = new Rejected();
@@ -247,16 +312,17 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
          } else {
             condition.setCondition(Symbol.valueOf("failed"));
          }
+         connection.runLater(() -> {
 
-         condition.setDescription(e.getMessage());
-         rejected.setError(condition);
-         connection.lock();
-         try {
+            condition.setDescription(e.getMessage());
+            rejected.setError(condition);
+
             delivery.disposition(rejected);
             delivery.settle();
-         } finally {
-            connection.unlock();
-         }
+            flow();
+            connection.flush();
+         });
+
       }
    }
 
@@ -279,29 +345,27 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
       close(false);
    }
 
-   public void flow(int credits, int threshold) {
+   public void flow() {
+      connection.requireInHandler();
+      if (!creditRunnable.isRun()) {
+         return; // nothing to be done as the previous one did not run yet
+      }
+
+      creditRunnable.reset();
+
       // Use the SessionSPI to allocate producer credits, or default, always allocate credit.
       if (sessionSPI != null) {
-         sessionSPI.offerProducerCredit(address, credits, threshold, receiver);
+         sessionSPI.flow(address, creditRunnable);
       } else {
-         connection.lock();
-         try {
-            receiver.flow(credits);
-         } finally {
-            connection.unlock();
-         }
-         connection.flush();
+         creditRunnable.run();
       }
    }
 
    public void drain(int credits) {
-      connection.lock();
-      try {
+      connection.runNow(() -> {
          receiver.drain(credits);
-      } finally {
-         connection.unlock();
-      }
-      connection.flush();
+         connection.flush();
+      });
    }
 
    public int drained() {

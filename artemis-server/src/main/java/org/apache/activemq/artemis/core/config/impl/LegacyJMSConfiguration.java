@@ -17,14 +17,10 @@
 package org.apache.activemq.artemis.core.config.impl;
 
 import javax.management.MBeanServer;
-import javax.xml.XMLConstants;
-import javax.xml.validation.Schema;
-import javax.xml.validation.SchemaFactory;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.net.URL;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.activemq.artemis.api.core.RoutingType;
@@ -110,9 +106,11 @@ public class LegacyJMSConfiguration implements Deployable {
       String xml = XMLUtil.readerToString(reader);
       xml = XMLUtil.replaceSystemProps(xml);
       Element e = XMLUtil.stringToElement(xml);
-      SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-      Schema schema = schemaFactory.newSchema(XMLUtil.findResource(CONFIGURATION_SCHEMA_URL));
-      parseConfiguration(e);
+      // only parse elements from <jms>
+      NodeList children = e.getElementsByTagName(CONFIGURATION_SCHEMA_ROOT_ELEMENT);
+      if (children.getLength() > 0) {
+         parseConfiguration(children.item(0));
+      }
    }
 
    /**
@@ -151,10 +149,9 @@ public class LegacyJMSConfiguration implements Deployable {
     */
    public void parseTopicConfiguration(final Node node) throws Exception {
       String topicName = node.getAttributes().getNamedItem(NAME_ATTR).getNodeValue();
-      List<CoreAddressConfiguration> coreAddressConfigurations = configuration.getAddressConfigurations();
-      coreAddressConfigurations.add(new CoreAddressConfiguration()
-                                       .setName(topicName)
-                                       .addRoutingType(RoutingType.MULTICAST));
+      configuration.addAddressConfiguration(new CoreAddressConfiguration()
+                                               .setName(topicName)
+                                               .addRoutingType(RoutingType.MULTICAST));
    }
 
    /**
@@ -174,22 +171,22 @@ public class LegacyJMSConfiguration implements Deployable {
       for (int i = 0; i < children.getLength(); i++) {
          Node child = children.item(i);
 
-         if (QUEUE_SELECTOR_NODE_NAME.equals(children.item(i).getNodeName())) {
-            Node selectorNode = children.item(i);
+         if (QUEUE_SELECTOR_NODE_NAME.equals(child.getNodeName())) {
+            Node selectorNode = child;
             Node attNode = selectorNode.getAttributes().getNamedItem("string");
             selectorString = attNode.getNodeValue();
          }
       }
 
-      List<CoreAddressConfiguration> coreAddressConfigurations = configuration.getAddressConfigurations();
-      coreAddressConfigurations.add(new CoreAddressConfiguration()
-                                       .setName(queueName)
-                                       .addRoutingType(RoutingType.ANYCAST)
-                                       .addQueueConfiguration(new CoreQueueConfiguration()
-                                                                 .setAddress(queueName)
-                                                                 .setName(queueName)
-                                                                 .setFilterString(selectorString)
-                                                                 .setRoutingType(RoutingType.ANYCAST)));
+      configuration.addAddressConfiguration(new CoreAddressConfiguration()
+                                               .setName(queueName)
+                                               .addRoutingType(RoutingType.ANYCAST)
+                                               .addQueueConfiguration(new CoreQueueConfiguration()
+                                                                         .setAddress(queueName)
+                                                                         .setName(queueName)
+                                                                         .setFilterString(selectorString)
+                                                                         .setDurable(durable)
+                                                                         .setRoutingType(RoutingType.ANYCAST)));
    }
 
 

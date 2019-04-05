@@ -52,7 +52,11 @@ public class Wait {
    }
 
    public static void assertEquals(long size, LongCondition condition, long timeout) throws Exception {
-      boolean result = waitFor(() -> condition.getCount() == size, timeout);
+      assertEquals(size, condition, timeout, SLEEP_MILLIS);
+   }
+
+   public static void assertEquals(Long size, LongCondition condition, long timeout, long sleepMillis) throws Exception {
+      boolean result = waitFor(() -> condition.getCount() == size, timeout, sleepMillis);
 
       if (!result) {
          Assert.fail(size + " != " + condition.getCount());
@@ -90,7 +94,12 @@ public class Wait {
 
 
    public static void assertTrue(String failureMessage, Condition condition) throws Exception {
-      boolean result = waitFor(condition);
+      assertTrue(failureMessage, condition, MAX_WAIT_MILLIS);
+   }
+
+   public static void assertTrue(String failureMessage, Condition condition, final long duration) throws Exception {
+
+      boolean result = waitFor(condition, duration);
 
       if (!result) {
          Assert.fail(failureMessage);

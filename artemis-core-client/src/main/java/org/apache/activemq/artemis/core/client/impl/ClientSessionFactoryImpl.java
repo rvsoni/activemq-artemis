@@ -51,6 +51,7 @@ import org.apache.activemq.artemis.core.protocol.core.CoreRemotingConnection;
 import org.apache.activemq.artemis.core.protocol.core.impl.ActiveMQSessionContext;
 import org.apache.activemq.artemis.core.remoting.FailureListener;
 import org.apache.activemq.artemis.core.remoting.impl.TransportConfigurationUtil;
+import org.apache.activemq.artemis.core.remoting.impl.netty.NettyConnector;
 import org.apache.activemq.artemis.core.server.ActiveMQComponent;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.remoting.BufferHandler;
@@ -77,11 +78,11 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
 
    private final ClientProtocolManager clientProtocolManager;
 
-   private final TransportConfiguration connectorConfig;
+   private TransportConfiguration connectorConfig;
 
    private TransportConfiguration currentConnectorConfig;
 
-   private TransportConfiguration backupConfig;
+   private volatile TransportConfiguration backupConfig;
 
    private ConnectorFactory connectorFactory;
 
@@ -175,8 +176,6 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
 
       this.clientProtocolManager.setSessionFactory(this);
 
-      this.connectorConfig = connectorConfig;
-
       this.currentConnectorConfig = connectorConfig;
 
       connectorFactory = instantiateConnectorFactory(connectorConfig.getFactoryClassName());
@@ -239,7 +238,7 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
    public void connect(final int initialConnectAttempts,
                        final boolean failoverOnInitialConnection) throws ActiveMQException {
       // Get the connection
-      getConnectionWithRetry(initialConnectAttempts);
+      getConnectionWithRetry(initialConnectAttempts, null);
 
       if (connection == null) {
          StringBuilder msg = new StringBuilder("Unable to connect to server using configuration ").append(currentConnectorConfig);
@@ -745,7 +744,7 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
          session.preHandleFailover(connection);
       }
 
-      getConnectionWithRetry(reconnectAttempts);
+      getConnectionWithRetry(reconnectAttempts, oldConnection);
 
       if (connection == null) {
          if (!clientProtocolManager.isAlive())
@@ -772,11 +771,15 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
       ((CoreRemotingConnection) connection).syncIDGeneratorSequence(((CoreRemotingConnection) oldConnection).getIDGeneratorSequence());
 
       for (ClientSessionInternal session : sessionsToFailover) {
-         session.handleFailover(connection, cause);
+         if (!session.handleFailover(connection, cause)) {
+            connection.destroy();
+            this.connection = null;
+            return;
+         }
       }
    }
 
-   private void getConnectionWithRetry(final int reconnectAttempts) {
+   private void getConnectionWithRetry(final int reconnectAttempts, RemotingConnection oldConnection) {
       if (!clientProtocolManager.isAlive())
          return;
       if (logger.isTraceEnabled()) {
@@ -797,6 +800,10 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
          }
 
          if (getConnection() != null) {
+            if (oldConnection != null && oldConnection instanceof CoreRemotingConnection) {
+               // transferring old connection version into the new connection
+               ((CoreRemotingConnection)connection).setChannelVersion(((CoreRemotingConnection)oldConnection).getChannelVersion());
+            }
             if (logger.isDebugEnabled()) {
                logger.debug("Reconnection successful");
             }
@@ -881,6 +888,10 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
       }
    }
 
+   //The order of connector configs to try to get a connection:
+   //currentConnectorConfig, backupConfig and then lastConnectorConfig.
+   //On each successful connect, the current and last will be
+   //updated properly.
    @Override
    public RemotingConnection getConnection() {
       if (closed)
@@ -975,7 +986,7 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
       return AccessController.doPrivileged(new PrivilegedAction<ConnectorFactory>() {
          @Override
          public ConnectorFactory run() {
-            return (ConnectorFactory) ClassloadingUtil.newInstanceFromClassLoader(connectorFactoryClassName);
+            return (ConnectorFactory) ClassloadingUtil.newInstanceFromClassLoader(ClientSessionFactoryImpl.class, connectorFactoryClassName);
          }
       });
    }
@@ -1054,7 +1065,16 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
    }
 
    protected Connector createConnector(ConnectorFactory connectorFactory, TransportConfiguration configuration) {
-      return connectorFactory.createConnector(configuration.getParams(), new DelegatingBufferHandler(), this, closeExecutor, threadPool, scheduledThreadPool, clientProtocolManager);
+      Connector connector = connectorFactory.createConnector(configuration.getParams(), new DelegatingBufferHandler(), this, closeExecutor, threadPool, scheduledThreadPool, clientProtocolManager);
+      if (connector instanceof NettyConnector) {
+         NettyConnector nettyConnector = (NettyConnector) connector;
+         if (nettyConnector.getConnectTimeoutMillis() < 0) {
+            nettyConnector.setConnectTimeoutMillis((int)serverLocator.getConnectionTTL());
+         }
+
+      }
+
+      return connector;
    }
 
    private void checkTransportKeys(final ConnectorFactory factory, final TransportConfiguration tc) {
@@ -1101,8 +1121,8 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
 
                // Switching backup as live
                connector = backupConnector;
+               connectorConfig = currentConnectorConfig;
                currentConnectorConfig = backupConfig;
-               backupConfig = null;
                connectorFactory = backupConnectorFactory;
                return transportConnection;
             }
@@ -1113,23 +1133,24 @@ public class ClientSessionFactoryImpl implements ClientSessionFactoryInternal, C
          }
 
 
-         if (currentConnectorConfig.equals(connectorConfig)) {
+         if (currentConnectorConfig.equals(connectorConfig) || connectorConfig == null) {
 
             // There was no changes on current and original connectors, just return null here and let the retry happen at the first portion of this method on the next retry
             return null;
          }
 
-         ConnectorFactory originalConnectorFactory = instantiateConnectorFactory(connectorConfig.getFactoryClassName());
+         ConnectorFactory lastConnectorFactory = instantiateConnectorFactory(connectorConfig.getFactoryClassName());
 
-         Connector originalConnector = createConnector(originalConnectorFactory, connectorConfig);
+         Connector lastConnector = createConnector(lastConnectorFactory, connectorConfig);
 
-         transportConnection = openTransportConnection(originalConnector);
+         transportConnection = openTransportConnection(lastConnector);
 
          if (transportConnection != null) {
             logger.debug("Returning into original connector");
-            connector = originalConnector;
-            backupConfig = null;
+            connector = lastConnector;
+            TransportConfiguration temp = currentConnectorConfig;
             currentConnectorConfig = connectorConfig;
+            connectorConfig = temp;
             return transportConnection;
          } else {
             logger.debug("no connection been made, returning null");

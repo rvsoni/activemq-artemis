@@ -88,6 +88,7 @@ import org.apache.activemq.artemis.core.config.impl.ConfigurationImpl;
 import org.apache.activemq.artemis.core.config.impl.SecurityConfiguration;
 import org.apache.activemq.artemis.core.config.storage.DatabaseStorageConfiguration;
 import org.apache.activemq.artemis.core.io.SequentialFileFactory;
+import org.apache.activemq.artemis.core.io.aio.AIOSequentialFileFactory;
 import org.apache.activemq.artemis.core.io.nio.NIOSequentialFileFactory;
 import org.apache.activemq.artemis.core.journal.PreparedTransactionInfo;
 import org.apache.activemq.artemis.core.journal.RecordInfo;
@@ -130,7 +131,7 @@ import org.apache.activemq.artemis.core.settings.impl.AddressSettings;
 import org.apache.activemq.artemis.core.transaction.impl.XidImpl;
 import org.apache.activemq.artemis.jdbc.store.drivers.JDBCUtils;
 import org.apache.activemq.artemis.jdbc.store.sql.SQLProvider;
-import org.apache.activemq.artemis.jlibaio.LibaioContext;
+import org.apache.activemq.artemis.nativo.jlibaio.LibaioContext;
 import org.apache.activemq.artemis.spi.core.security.ActiveMQJAASSecurityManager;
 import org.apache.activemq.artemis.spi.core.security.ActiveMQSecurityManager;
 import org.apache.activemq.artemis.spi.core.security.jaas.InVMLoginModule;
@@ -552,6 +553,14 @@ public abstract class ActiveMQTestBase extends Assert {
       return params;
    }
 
+
+   /** This exists as an extension point for tests, so tests can replace it */
+   protected ClusterConnectionConfiguration createBasicClusterConfig(String connectorName,
+                                                                                      String... connectors) {
+      return basicClusterConnectionConfig(connectorName, connectors);
+   }
+
+
    protected static final ClusterConnectionConfiguration basicClusterConnectionConfig(String connectorName,
                                                                                       String... connectors) {
       ArrayList<String> connectors0 = new ArrayList<>();
@@ -600,7 +609,7 @@ public abstract class ActiveMQTestBase extends Assert {
    }
 
    public static JournalType getDefaultJournalType() {
-      if (LibaioContext.isLoaded()) {
+      if (AIOSequentialFileFactory.isSupported()) {
          return JournalType.ASYNCIO;
       } else {
          return JournalType.NIO;
@@ -1219,7 +1228,7 @@ public abstract class ActiveMQTestBase extends Assert {
       return params;
    }
 
-   protected static final TransportConfiguration getNettyAcceptorTransportConfiguration(final boolean live) {
+   protected TransportConfiguration getNettyAcceptorTransportConfiguration(final boolean live) {
       if (live) {
          return new TransportConfiguration(NETTY_ACCEPTOR_FACTORY);
       }
@@ -1231,7 +1240,7 @@ public abstract class ActiveMQTestBase extends Assert {
       return new TransportConfiguration(NETTY_ACCEPTOR_FACTORY, server1Params);
    }
 
-   protected static final TransportConfiguration getNettyConnectorTransportConfiguration(final boolean live) {
+   protected TransportConfiguration getNettyConnectorTransportConfiguration(final boolean live) {
       if (live) {
          return new TransportConfiguration(NETTY_CONNECTOR_FACTORY);
       }
@@ -1239,6 +1248,7 @@ public abstract class ActiveMQTestBase extends Assert {
       Map<String, Object> server1Params = new HashMap<>();
 
       server1Params.put(org.apache.activemq.artemis.core.remoting.impl.netty.TransportConstants.PORT_PROP_NAME, org.apache.activemq.artemis.core.remoting.impl.netty.TransportConstants.DEFAULT_PORT + 1);
+      server1Params.put(org.apache.activemq.artemis.core.remoting.impl.netty.TransportConstants.NETTY_CONNECT_TIMEOUT, 1000);
       return new TransportConfiguration(NETTY_CONNECTOR_FACTORY, server1Params);
    }
 
@@ -2186,6 +2196,25 @@ public abstract class ActiveMQTestBase extends Assert {
    protected int getMessageCount(final Queue queue) {
       queue.flushExecutor();
       return (int) queue.getMessageCount();
+   }
+
+   /**
+    * @param postOffice
+    * @param address
+    * @return
+    * @throws Exception
+    */
+   protected int getMessagesAdded(final PostOffice postOffice, final String address) throws Exception {
+      int messageCount = 0;
+
+      List<QueueBinding> bindings = getLocalQueueBindings(postOffice, address);
+
+      for (QueueBinding qBinding : bindings) {
+         qBinding.getQueue().flushExecutor();
+         messageCount += getMessagesAdded(qBinding.getQueue());
+      }
+
+      return messageCount;
    }
 
    protected int getMessagesAdded(final Queue queue) {

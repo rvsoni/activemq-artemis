@@ -411,6 +411,11 @@ public class PersistMultiThreadTest extends ActiveMQTestBase {
       }
 
       @Override
+      public boolean checkMemory(boolean runOnFailure, Runnable runnable) {
+         return false;
+      }
+
+      @Override
       public boolean checkMemory(Runnable runnable) {
          return false;
       }
@@ -468,6 +473,10 @@ public class PersistMultiThreadTest extends ActiveMQTestBase {
       @Override
       public boolean checkReleasedMemory() {
          return true;
+      }
+
+      @Override
+      public void destroy() throws Exception {
       }
    }
 }

@@ -239,9 +239,8 @@ public class AMQSession implements SessionCallback {
                   SimpleString addressToUse = queueName;
                   RoutingType routingTypeToUse = RoutingType.ANYCAST;
                   if (CompositeAddress.isFullyQualified(queueName.toString())) {
-                     CompositeAddress compositeAddress = CompositeAddress.getQueueName(queueName.toString());
-                     addressToUse = new SimpleString(compositeAddress.getAddress());
-                     queueNameToUse = new SimpleString(compositeAddress.getQueueName());
+                     addressToUse = CompositeAddress.extractAddressName(queueName);
+                     queueNameToUse = CompositeAddress.extractQueueName(queueName);
                      if (bindingQuery.getAddressInfo() != null) {
                         routingTypeToUse = bindingQuery.getAddressInfo().getRoutingType();
                      } else {
@@ -418,9 +417,13 @@ public class AMQSession implements SessionCallback {
             //non-persistent messages goes here, by default we stop reading from
             //transport
             connection.getTransportConnection().setAutoRead(false);
-            if (!store.checkMemory(enableAutoReadAndTtl)) {
-               enableAutoReadAndTtl();
-               throw new ResourceAllocationException("Queue is full " + address);
+            if (store != null) {
+               if (!store.checkMemory(enableAutoReadAndTtl)) {
+                  enableAutoReadAndTtl();
+                  throw new ResourceAllocationException("Queue is full " + address);
+               }
+            } else {
+               enableAutoReadAndTtl.run();
             }
 
             getCoreSession().send(coreMsg, false, dest.isTemporary());
@@ -443,7 +446,7 @@ public class AMQSession implements SessionCallback {
                                         final AtomicInteger count,
                                         final org.apache.activemq.artemis.api.core.Message coreMsg,
                                         final SimpleString address) throws ResourceAllocationException {
-      if (!store.checkMemory(() -> {
+      final Runnable task = () -> {
          Exception exceptionToSend = null;
 
          try {
@@ -496,10 +499,15 @@ public class AMQSession implements SessionCallback {
                });
             }
          }
-      })) {
-         this.connection.getContext().setDontSendReponse(false);
-         connection.enableTtl();
-         throw new ResourceAllocationException("Queue is full " + address);
+      };
+      if (store != null) {
+         if (!store.checkMemory(false, task)) {
+            this.connection.getContext().setDontSendReponse(false);
+            connection.enableTtl();
+            throw new ResourceAllocationException("Queue is full " + address);
+         }
+      } else {
+         task.run();
       }
    }
 

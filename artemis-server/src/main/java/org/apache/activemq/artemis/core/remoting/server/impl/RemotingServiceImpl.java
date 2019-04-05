@@ -263,7 +263,7 @@ public class RemotingServiceImpl implements RemotingService, ServerConnectionLif
 
          Map<String, ProtocolManager> selectedProtocols = new ConcurrentHashMap<>();
          for (Entry<String, ProtocolManagerFactory> entry : selectedProtocolFactories.entrySet()) {
-            selectedProtocols.put(entry.getKey(), entry.getValue().createProtocolManager(server, info.getExtraParams(), incomingInterceptors, outgoingInterceptors));
+            selectedProtocols.put(entry.getKey(), entry.getValue().createProtocolManager(server, info.getCombinedParams(), incomingInterceptors, outgoingInterceptors));
          }
 
          acceptor = factory.createAcceptor(info.getName(), clusterConnection, info.getParams(), new DelegatingBufferHandler(), this, threadPool, scheduledThreadPool, selectedProtocols);
@@ -515,8 +515,8 @@ public class RemotingServiceImpl implements RemotingService, ServerConnectionLif
 
       ConnectionEntry entry = protocol.createConnectionEntry((Acceptor) component, connection);
       try {
-         if (server.hasBrokerPlugins()) {
-            server.callBrokerPlugins(plugin -> plugin.afterCreateConnection(entry.connection));
+         if (server.hasBrokerConnectionPlugins()) {
+            server.callBrokerConnectionPlugins(plugin -> plugin.afterCreateConnection(entry.connection));
          }
       } catch (ActiveMQException t) {
          logger.warn("Error executing afterCreateConnection plugin method: {}", t.getMessage(), t);
@@ -549,8 +549,8 @@ public class RemotingServiceImpl implements RemotingService, ServerConnectionLif
          RemotingConnection removedConnection = removeConnection(connectionID);
          if (removedConnection != null) {
             try {
-               if (server.hasBrokerPlugins()) {
-                  server.callBrokerPlugins(plugin -> plugin.afterDestroyConnection(removedConnection));
+               if (server.hasBrokerConnectionPlugins()) {
+                  server.callBrokerConnectionPlugins(plugin -> plugin.afterDestroyConnection(removedConnection));
                }
             } catch (ActiveMQException t) {
                logger.warn("Error executing afterDestroyConnection plugin method: {}", t.getMessage(), t);

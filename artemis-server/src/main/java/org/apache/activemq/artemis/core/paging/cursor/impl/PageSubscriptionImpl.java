@@ -59,7 +59,7 @@ import org.apache.activemq.artemis.utils.actors.ArtemisExecutor;
 import org.apache.activemq.artemis.utils.collections.ConcurrentHashSet;
 import org.jboss.logging.Logger;
 
-final class PageSubscriptionImpl implements PageSubscription {
+public final class PageSubscriptionImpl implements PageSubscription {
 
    private static final Logger logger = Logger.getLogger(PageSubscriptionImpl.class);
 
@@ -461,11 +461,22 @@ final class PageSubscriptionImpl implements PageSubscription {
 
    }
 
+   private void confirmPosition(final Transaction tx, final PagePosition position, final long persistentSize) throws Exception {
+      // if the cursor is persistent
+      if (persistent) {
+         store.storeCursorAcknowledgeTransactional(tx.getID(), cursorId, position);
+      }
+      installTXCallback(tx, position, persistentSize);
+   }
+
    @Override
    public void ackTx(final Transaction tx, final PagedReference reference) throws Exception {
-      confirmPosition(tx, reference.getPosition());
+      //pre-calculate persistentSize
+      final long persistentSize = getPersistentSize(reference);
 
-      counter.increment(tx, -1, -getPersistentSize(reference));
+      confirmPosition(tx, reference.getPosition(), persistentSize);
+
+      counter.increment(tx, -1, -persistentSize);
 
       PageTransactionInfo txInfo = getPageTransaction(reference);
       if (txInfo != null) {
@@ -552,6 +563,15 @@ final class PageSubscriptionImpl implements PageSubscription {
 
       if (info != null) {
          info.incrementPendingTX();
+      }
+   }
+
+   @Override
+   public void removePendingDelivery(final PagePosition position) {
+      PageCursorInfo info = getPageInfo(position);
+
+      if (info != null) {
+         info.decrementPendingTX();
       }
    }
 
@@ -780,7 +800,7 @@ final class PageSubscriptionImpl implements PageSubscription {
       return getPageInfo(pos.getPageNr());
    }
 
-   private PageCursorInfo getPageInfo(final long pageNr) {
+   public PageCursorInfo getPageInfo(final long pageNr) {
       synchronized (consumedPages) {
          PageCursorInfo pageInfo = consumedPages.get(pageNr);
 
@@ -855,11 +875,16 @@ final class PageSubscriptionImpl implements PageSubscription {
       return info;
    }
 
+   private void installTXCallback(final Transaction tx, final PagePosition position) {
+      installTXCallback(tx, position, -1);
+   }
+
    /**
     * @param tx
     * @param position
+    * @param persistentSize if negative it needs to be calculated on the fly
     */
-   private void installTXCallback(final Transaction tx, final PagePosition position) {
+   private void installTXCallback(final Transaction tx, final PagePosition position, final long persistentSize) {
       if (position.getRecordID() >= 0) {
          // It needs to persist, otherwise the cursor will return to the fist page position
          tx.setContainsPersistent();
@@ -867,9 +892,15 @@ final class PageSubscriptionImpl implements PageSubscription {
 
       PageCursorInfo info = getPageInfo(position);
       PageCache cache = info.getCache();
-      long size = 0;
       if (cache != null) {
-         size = getPersistentSize(cache.getMessage(position.getMessageNr()));
+         final long size;
+         if (persistentSize < 0) {
+            //cache.getMessage is potentially expensive depending
+            //on the current cache size and which message is queried
+            size = getPersistentSize(cache.getMessage(position.getMessageNr()));
+         } else {
+            size = persistentSize;
+         }
          position.setPersistentSize(size);
       }
 
@@ -916,7 +947,7 @@ final class PageSubscriptionImpl implements PageSubscription {
     * This instance will be released as soon as the entire page is consumed, releasing the memory at
     * that point The ref counts are increased also when a message is ignored for any reason.
     */
-   private final class PageCursorInfo {
+   public final class PageCursorInfo {
 
       // Number of messages existent on this page
       private final int numberOfMessages;
@@ -934,6 +965,7 @@ final class PageSubscriptionImpl implements PageSubscription {
       private final boolean wasLive;
 
       // There's a pending TX to add elements on this page
+      // also can be used to prevent the page from being deleted too soon.
       private final AtomicInteger pendingTX = new AtomicInteger(0);
 
       // There's a pending delete on the async IO pipe
@@ -1108,6 +1140,9 @@ final class PageSubscriptionImpl implements PageSubscription {
          return cache != null ? cache.get() : null;
       }
 
+      public int getPendingTx() {
+         return pendingTX.get();
+      }
    }
 
    private final class PageCursorTX extends TransactionOperationAbstract {
@@ -1271,6 +1306,10 @@ final class PageSubscriptionImpl implements PageSubscription {
                   continue;
                }
 
+               if (info != null && info.isAck(message.getPosition())) {
+                  continue;
+               }
+
                // 2nd ... if TX, is it committed?
                if (valid && message.getPagedMessage().getTransactionID() >= 0) {
                   PageTransactionInfo tx = pageStore.getPagingManager().getTransaction(message.getPagedMessage().getTransactionID());
@@ -1298,9 +1337,7 @@ final class PageSubscriptionImpl implements PageSubscription {
                   }
                }
 
-               if (!ignored) {
-                  position = message.getPosition();
-               }
+               position = message.getPosition();
 
                if (valid) {
                   match = match(message.getMessage());

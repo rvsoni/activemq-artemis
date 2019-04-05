@@ -17,9 +17,11 @@
 package org.apache.activemq.artemis.core.server.impl;
 
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.function.Consumer;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.ServerConsumer;
@@ -29,7 +31,7 @@ import org.apache.activemq.artemis.utils.collections.LinkedListImpl;
 /**
  * Implementation of a MessageReference
  */
-public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceImpl> implements MessageReference {
+public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceImpl> implements MessageReference, Runnable {
 
    private static final AtomicIntegerFieldUpdater<MessageReferenceImpl> DELIVERY_COUNT_UPDATER = AtomicIntegerFieldUpdater
       .newUpdater(MessageReferenceImpl.class, "deliveryCount");
@@ -52,6 +54,8 @@ public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceIm
    private boolean alreadyAcked;
 
    private Object protocolData;
+
+   private Consumer<? super MessageReference> onDelivery;
 
    // Static --------------------------------------------------------
 
@@ -82,6 +86,27 @@ public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceIm
    }
 
    // MessageReference implementation -------------------------------
+
+   @Override
+   public void onDelivery(Consumer<? super MessageReference> onDelivery) {
+      assert this.onDelivery == null;
+      this.onDelivery = onDelivery;
+   }
+
+   /**
+    * It will call {@link Consumer#accept(Object)} on {@code this} of the {@link Consumer} registered in {@link #onDelivery(Consumer)}, if any.
+    */
+   @Override
+   public void run() {
+      final Consumer<? super MessageReference> onDelivery = this.onDelivery;
+      if (onDelivery != null) {
+         try {
+            onDelivery.accept(this);
+         } finally {
+            this.onDelivery = null;
+         }
+      }
+   }
 
    @Override
    public Object getProtocolData() {
@@ -165,6 +190,11 @@ public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceIm
    }
 
    @Override
+   public boolean isDurable() {
+      return getMessage().isDurable();
+   }
+
+   @Override
    public void handled() {
       queue.referenceHandled(this);
    }
@@ -230,6 +260,15 @@ public class MessageReferenceImpl extends LinkedListImpl.Node<MessageReferenceIm
          throw new IllegalStateException("consumerID isn't specified: please check hasConsumerId first");
       }
       return this.consumerID;
+   }
+
+   @Override
+   public SimpleString getLastValueProperty() {
+      SimpleString lastValue = message.getSimpleStringProperty(queue.getLastValueKey());
+      if (lastValue == null) {
+         lastValue = message.getLastValueProperty();
+      }
+      return lastValue;
    }
 
    @Override

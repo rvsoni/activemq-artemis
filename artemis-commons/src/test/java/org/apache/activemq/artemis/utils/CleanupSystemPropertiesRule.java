@@ -64,23 +64,42 @@ public class CleanupSystemPropertiesRule extends ExternalResource {
          }
       }
 
+      for (Map.Entry<Object, Object> entry : originalProperties.entrySet()) {
+         if (System.getProperty((String) entry.getKey()) == null) {
+            System.out.println("======================================================================================================");
+            System.out.println("Reinstating property " + entry.getKey() + "=" + entry.getValue());
+            System.setProperty((String) entry.getKey(), (String) entry.getValue());
+            System.out.println("======================================================================================================");
+         }
+
+      }
+
       if (!newProperties.isEmpty() || !changed.isEmpty()) {
 
          System.out.println("======================================================================================================");
 
-         for (Object key : newProperties) {
-            System.out.println("Cleaning up system property " + key);
-            System.clearProperty(key.toString());
+         if (!newProperties.isEmpty()) {
+            System.out.println("Clearing system property...");
+
+            int i = 1;
+            for (Object key : newProperties) {
+               System.out.printf("\t%3d. %s = %s%n", i++, key, System.getProperty(key.toString()));
+               System.clearProperty(key.toString());
+            }
          }
 
-         for (Map.Entry<Object, Object> entry : changed.entrySet()) {
-            System.out.println("Setting up old system property, key=" + entry.getKey() + ", value = " + entry.getValue());
-            System.setProperty(entry.getKey().toString(), entry.getValue().toString());
+         if (!changed.isEmpty()) {
+            System.out.println("Resetting system property...");
+
+            int i = 1;
+            for (Map.Entry<Object, Object> entry : changed.entrySet()) {
+               System.out.printf("\t%3d. %s = %s (was %s)%n", i++, entry.getKey(), entry.getValue(), System.getProperty(entry.getKey().toString()));
+               System.setProperty(entry.getKey().toString(), entry.getValue().toString());
+            }
          }
 
          System.out.println("======================================================================================================");
       }
-
 
       // lets give GC a hand
       originalProperties.clear();

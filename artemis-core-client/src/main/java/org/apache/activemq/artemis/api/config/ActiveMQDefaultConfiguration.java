@@ -21,14 +21,18 @@ import java.util.concurrent.TimeUnit;
 import org.apache.activemq.artemis.ArtemisConstants;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
-import org.apache.activemq.artemis.core.server.DivertConfigurationRoutingType;
+import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.utils.critical.CriticalAnalyzerPolicy;
+import org.jboss.logging.Logger;
 
 /**
  * Default values of ActiveMQ Artemis configuration parameters.
  */
 public final class ActiveMQDefaultConfiguration {
-      /*
+
+   private static final Logger logger = Logger.getLogger(ActiveMQDefaultConfiguration.class);
+
+   /*
     * <p> In order to avoid compile time in-lining of constants, all access is done through methods
     * and all fields are PRIVATE STATIC but not FINAL. This is done following the recommendation at
     * <a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-13.html#jls-13.4.9">13.4.9.
@@ -178,6 +182,12 @@ public final class ActiveMQDefaultConfiguration {
    // Cluster password. It applies to all cluster configurations.
    private static String DEFAULT_CLUSTER_PASSWORD = "CHANGE ME!!";
 
+   // Cluster username. It applies to all cluster configurations.
+   private static String DEFAULT_FEDERATION_USER = "ACTIVEMQ.CLUSTER.ADMIN.USER";
+
+   // Cluster password. It applies to all cluster configurations.
+   private static String DEFAULT_FEDERATION_PASSWORD = "CHANGE ME!!";
+
    // This option controls whether passwords in server configuration need be masked. If set to "true" the passwords are masked.
    private static Boolean DEFAULT_MASK_PASSWORD = null;
 
@@ -213,6 +223,9 @@ public final class ActiveMQDefaultConfiguration {
 
    // how often (in ms) to scan for expired messages
    private static long DEFAULT_MESSAGE_EXPIRY_SCAN_PERIOD = 30000;
+
+   // how often (in ms) to scan for addresses and queues which should be deleted
+   private static long DEFAULT_ADDRESS_QUEUE_SCAN_PERIOD = 30000;
 
    // the priority of the thread expiring messages
    private static int DEFAULT_MESSAGE_EXPIRY_THREAD_PRIORITY = 3;
@@ -364,7 +377,10 @@ public final class ActiveMQDefaultConfiguration {
    private static boolean DEFAULT_DIVERT_EXCLUSIVE = false;
 
    // how the divert should handle the message's routing type
-   private static String DEFAULT_DIVERT_ROUTING_TYPE = DivertConfigurationRoutingType.STRIP.toString();
+   private static String DEFAULT_DIVERT_ROUTING_TYPE = ComponentConfigurationRoutingType.STRIP.toString();
+
+   // how the bridge should handle the message's routing type
+   private static String DEFAULT_BRIDGE_ROUTING_TYPE = ComponentConfigurationRoutingType.PASS.toString();
 
    // If true then the server will request a backup on another node
    private static boolean DEFAULT_HAPOLICY_REQUEST_BACKUP = false;
@@ -461,17 +477,51 @@ public final class ActiveMQDefaultConfiguration {
 
    public static final long DEFAULT_GLOBAL_MAX_SIZE = Runtime.getRuntime().maxMemory() / 2;
 
-   public static final int DEFAULT_MAX_DISK_USAGE = 100;
+   public static final int DEFAULT_MAX_DISK_USAGE;
+
+   static {
+      int maxDisk;
+      try {
+         maxDisk = Integer.parseInt(System.getProperty(ActiveMQDefaultConfiguration.getDefaultSystemPropertyPrefix() + "maxDiskUsage", "90"));
+      } catch (Throwable e) {
+         // This is not really supposed to happen, so just logging it, just in case
+         logger.warn(e);
+         maxDisk = 90;
+      }
+      DEFAULT_MAX_DISK_USAGE = maxDisk;
+   }
 
    public static final int DEFAULT_DISK_SCAN = 5000;
 
    public static final int DEFAULT_MAX_QUEUE_CONSUMERS = -1;
 
+   public static final int DEFAULT_CONSUMER_PRIORITY = 0;
+
    public static final boolean DEFAULT_EXCLUSIVE = false;
 
    public static final boolean DEFAULT_LAST_VALUE = false;
 
+   public static final SimpleString DEFAULT_LAST_VALUE_KEY = null;
+
+   public static final boolean DEFAULT_NON_DESTRUCTIVE = false;
+
    public static final boolean DEFAULT_PURGE_ON_NO_CONSUMERS = false;
+
+   public static final boolean DEFAULT_QUEUE_AUTO_DELETE = true;
+
+   public static final boolean DEFAULT_CREATED_QUEUE_AUTO_DELETE = false;
+
+   public static final long DEFAULT_QUEUE_AUTO_DELETE_DELAY = 0;
+
+   public static final long DEFAULT_QUEUE_AUTO_DELETE_MESSAGE_COUNT = 0;
+
+   public static final int DEFAULT_CONSUMERS_BEFORE_DISPATCH = 0;
+
+   public static final long DEFAULT_DELAY_BEFORE_DISPATCH = -1;
+
+   public static final int DEFAULT_GROUP_BUCKETS = -1;
+
+   public static final boolean DEFAULT_GROUP_REBALANCE = false;
 
    public static final RoutingType DEFAULT_ROUTING_TYPE = RoutingType.MULTICAST;
 
@@ -499,6 +549,8 @@ public final class ActiveMQDefaultConfiguration {
 
    //how long we wait for vote result, 30 secs
    private static int DEFAULT_QUORUM_VOTE_WAIT = 30;
+
+   private static long DEFAULT_RETRY_REPLICATION_WAIT = 2000;
 
    public static int DEFAULT_QUORUM_SIZE = -1;
 
@@ -629,6 +681,20 @@ public final class ActiveMQDefaultConfiguration {
    }
 
    /**
+    * Federation username. It applies to all federation configurations.
+    */
+   public static String getDefaultFederationUser() {
+      return DEFAULT_CLUSTER_USER;
+   }
+
+   /**
+    * Federation password. It applies to all federation configurations.
+    */
+   public static String getDefaultFederationPassword() {
+      return DEFAULT_CLUSTER_PASSWORD;
+   }
+
+   /**
     * This option controls whether passwords in server configuration need be masked. If set to "true" the passwords are masked.
     */
    public static Boolean isDefaultMaskPassword() {
@@ -714,6 +780,13 @@ public final class ActiveMQDefaultConfiguration {
     */
    public static int getDefaultMessageExpiryThreadPriority() {
       return DEFAULT_MESSAGE_EXPIRY_THREAD_PRIORITY;
+   }
+
+   /**
+    * how often (in ms) to scan for addresses and queues which should be deleted
+    */
+   public static long getDefaultAddressQueueScanPeriod() {
+      return DEFAULT_ADDRESS_QUEUE_SCAN_PERIOD;
    }
 
    /**
@@ -1070,6 +1143,13 @@ public final class ActiveMQDefaultConfiguration {
    }
 
    /**
+    * how the bridge should handle the message's routing type
+    */
+   public static String getDefaultBridgeRoutingType() {
+      return DEFAULT_BRIDGE_ROUTING_TYPE;
+   }
+
+   /**
     * If true then the server will request a backup on another node
     */
    public static boolean isDefaultHapolicyRequestBackup() {
@@ -1290,16 +1370,64 @@ public final class ActiveMQDefaultConfiguration {
       return DEFAULT_MAX_QUEUE_CONSUMERS;
    }
 
+   public static int getDefaultConsumerPriority() {
+      return DEFAULT_CONSUMER_PRIORITY;
+   }
+
    public static boolean getDefaultExclusive() {
       return DEFAULT_EXCLUSIVE;
    }
 
    public static boolean getDefaultLastValue() {
-      return DEFAULT_EXCLUSIVE;
+      return DEFAULT_LAST_VALUE;
+   }
+
+   public static SimpleString getDefaultLastValueKey() {
+      return DEFAULT_LAST_VALUE_KEY;
+   }
+
+   public static boolean getDefaultNonDestructive() {
+      return DEFAULT_NON_DESTRUCTIVE;
    }
 
    public static boolean getDefaultPurgeOnNoConsumers() {
       return DEFAULT_PURGE_ON_NO_CONSUMERS;
+   }
+
+   public static boolean getDefaultQueueAutoDelete(boolean autoCreated) {
+      return autoCreated ? getDefaultQueueAutoDelete() : getDefaultCreatedQueueAutoDelete();
+   }
+
+   public static boolean getDefaultQueueAutoDelete() {
+      return DEFAULT_QUEUE_AUTO_DELETE;
+   }
+
+   public static boolean getDefaultCreatedQueueAutoDelete() {
+      return DEFAULT_CREATED_QUEUE_AUTO_DELETE;
+   }
+
+   public static long getDefaultQueueAutoDeleteDelay() {
+      return DEFAULT_QUEUE_AUTO_DELETE_DELAY;
+   }
+
+   public static long getDefaultQueueAutoDeleteMessageCount() {
+      return DEFAULT_QUEUE_AUTO_DELETE_MESSAGE_COUNT;
+   }
+
+   public static int getDefaultConsumersBeforeDispatch() {
+      return DEFAULT_CONSUMERS_BEFORE_DISPATCH;
+   }
+
+   public static long getDefaultDelayBeforeDispatch() {
+      return DEFAULT_DELAY_BEFORE_DISPATCH;
+   }
+
+   public static int getDefaultGroupBuckets() {
+      return DEFAULT_GROUP_BUCKETS;
+   }
+
+   public static boolean getDefaultGroupRebalance() {
+      return DEFAULT_GROUP_REBALANCE;
    }
 
    public static String getInternalNamingPrefix() {
@@ -1371,5 +1499,9 @@ public final class ActiveMQDefaultConfiguration {
 
    public static int getDefaultQuorumVoteWait() {
       return DEFAULT_QUORUM_VOTE_WAIT;
+   }
+
+   public static long getDefaultRetryReplicationWait() {
+      return DEFAULT_RETRY_REPLICATION_WAIT;
    }
 }

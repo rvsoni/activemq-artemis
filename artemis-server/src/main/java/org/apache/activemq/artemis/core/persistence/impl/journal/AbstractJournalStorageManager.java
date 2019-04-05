@@ -113,6 +113,7 @@ import org.apache.activemq.artemis.spi.core.protocol.MessagePersister;
 import org.apache.activemq.artemis.utils.Base64;
 import org.apache.activemq.artemis.utils.ExecutorFactory;
 import org.apache.activemq.artemis.utils.IDGenerator;
+import org.apache.activemq.artemis.utils.collections.ConcurrentLongHashMap;
 import org.apache.activemq.artemis.utils.critical.CriticalAnalyzer;
 import org.apache.activemq.artemis.utils.critical.CriticalComponentImpl;
 import org.jboss.logging.Logger;
@@ -126,8 +127,10 @@ import org.jboss.logging.Logger;
  */
 public abstract class AbstractJournalStorageManager extends CriticalComponentImpl implements StorageManager {
 
-   private static final int CRITICAL_PATHS = 1;
-   private static final int CRITICAL_STORE = 0;
+   protected static final int CRITICAL_PATHS = 3;
+   protected static final int CRITICAL_STORE = 0;
+   protected static final int CRITICAL_STOP = 1;
+   protected static final int CRITICAL_STOP_2 = 2;
 
    private static final Logger logger = Logger.getLogger(AbstractJournalStorageManager.class);
 
@@ -191,7 +194,7 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
 
    protected final Map<SimpleString, PersistedAddressSetting> mapPersistedAddressSettings = new ConcurrentHashMap<>();
 
-   protected final Set<Long> largeMessagesToDelete = new HashSet<>();
+   protected final ConcurrentLongHashMap<LargeServerMessage> largeMessagesToDelete = new ConcurrentLongHashMap<>();
 
    public AbstractJournalStorageManager(final Configuration config,
                                         final CriticalAnalyzer analyzer,
@@ -403,6 +406,16 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
    public void readUnLock() {
       storageManagerLock.readLock().unlock();
       leaveCritical(CRITICAL_STORE);
+   }
+
+   /** for internal use and testsuite, don't use it outside of tests */
+   public void writeLock() {
+      storageManagerLock.writeLock().lock();
+   }
+
+   /** for internal use and testsuite, don't use it outside of tests */
+   public void writeUnlock() {
+      storageManagerLock.writeLock().unlock();
    }
 
    @Override
@@ -657,6 +670,9 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
       try {
          messageJournal.appendCommitRecord(txID, syncTransactional, getContext(syncTransactional), lineUpContext);
          if (!lineUpContext && !syncTransactional) {
+            if (logger.isTraceEnabled()) {
+               logger.trace("calling getContext(true).done() for txID=" + txID + ",lineupContext=" + lineUpContext + " syncTransactional=" + syncTransactional + "... forcing call on getContext(true).done");
+            }
             /**
              * If {@code lineUpContext == false}, it means that we have previously lined up a
              * context somewhere else (specifically see @{link TransactionImpl#asyncAppendCommit}),
@@ -1140,7 +1156,10 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
 
                   pendingCountEncoding.decode(buff);
                   pendingCountEncoding.setID(record.id);
-
+                  PageSubscription sub = locateSubscription(pendingCountEncoding.getQueueID(), pageSubscriptions, queueInfos, pagingManager);
+                  if (sub != null) {
+                     sub.notEmpty();
+                  }
                   // This can be null on testcases not interested on this outcome
                   if (pendingNonTXPageCounter != null) {
                      pendingNonTXPageCounter.add(pendingCountEncoding);
@@ -1226,6 +1245,9 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
          if (queueInfo != null) {
             SimpleString address = queueInfo.getAddress();
             PagingStore store = pagingManager.getPageStore(address);
+            if (store == null) {
+               return null;
+            }
             subs = store.getCursorProvider().getSubscription(queueID);
             pageSubscriptions.put(queueID, subs);
          }
@@ -1275,7 +1297,7 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
 
       SimpleString filterString = filter == null ? null : filter.getFilterString();
 
-      PersistentQueueBindingEncoding bindingEncoding = new PersistentQueueBindingEncoding(queue.getName(), binding.getAddress(), filterString, queue.getUser(), queue.isAutoCreated(), queue.getMaxConsumers(), queue.isPurgeOnNoConsumers(), queue.isExclusive(), queue.isLastValue(), queue.getRoutingType().getType());
+      PersistentQueueBindingEncoding bindingEncoding = new PersistentQueueBindingEncoding(queue.getName(), binding.getAddress(), filterString, queue.getUser(), queue.isAutoCreated(), queue.getMaxConsumers(), queue.isPurgeOnNoConsumers(), queue.isExclusive(), queue.isGroupRebalance(), queue.getGroupBuckets(), queue.isLastValue(), queue.getLastValueKey(), queue.isNonDestructive(), queue.getConsumersBeforeDispatch(), queue.getDelayBeforeDispatch(), queue.isAutoDelete(), queue.getAutoDeleteDelay(), queue.getAutoDeleteMessageCount(), queue.getRoutingType().getType(), queue.isConfigurationManaged());
 
       readLock();
       try {
@@ -1632,12 +1654,14 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
    // Package protected ---------------------------------------------
 
    protected void confirmLargeMessage(final LargeServerMessage largeServerMessage) {
-      if (largeServerMessage.getPendingRecordID() >= 0) {
-         try {
-            confirmPendingLargeMessage(largeServerMessage.getPendingRecordID());
-            largeServerMessage.setPendingRecordID(LargeServerMessage.NO_PENDING_ID);
-         } catch (Exception e) {
-            ActiveMQServerLogger.LOGGER.warn(e.getMessage(), e);
+      synchronized (largeServerMessage) {
+         if (largeServerMessage.getPendingRecordID() >= 0) {
+            try {
+               confirmPendingLargeMessage(largeServerMessage.getPendingRecordID());
+               largeServerMessage.setPendingRecordID(LargeServerMessage.NO_PENDING_ID);
+            } catch (Exception e) {
+               ActiveMQServerLogger.LOGGER.warn(e.getMessage(), e);
+            }
          }
       }
    }
@@ -1730,7 +1754,9 @@ public abstract class AbstractJournalStorageManager extends CriticalComponentImp
 
                   if (record.isUpdate) {
                      PageTransactionInfo pgTX = pagingManager.getTransaction(pageTransactionInfo.getTransactionID());
-                     pgTX.reloadUpdate(this, pagingManager, tx, pageTransactionInfo.getNumberOfMessages());
+                     if (pgTX != null) {
+                        pgTX.reloadUpdate(this, pagingManager, tx, pageTransactionInfo.getNumberOfMessages());
+                     }
                   } else {
                      pageTransactionInfo.setCommitted(false);
 

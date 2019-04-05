@@ -130,9 +130,8 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
     * however we need the guard to synchronize multiple step operations during topology updates.
     */
    private final Object recordsGuard = new Object();
-   private final Map<String, MessageFlowRecord> records = new ConcurrentHashMap<>();
 
-   private final Map<String, MessageFlowRecord> disconnectedRecords = new ConcurrentHashMap<>();
+   private final Map<String, MessageFlowRecord> records = new ConcurrentHashMap<>();
 
    private final ScheduledExecutorService scheduledExecutor;
 
@@ -440,7 +439,9 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
       if (managementService != null) {
          TypedProperties props = new TypedProperties();
          props.putSimpleStringProperty(new SimpleString("name"), name);
-         Notification notification = new Notification(nodeManager.getNodeId().toString(), CoreNotificationType.CLUSTER_CONNECTION_STOPPED, props);
+         //nodeID can be null if there's only a backup
+         SimpleString nodeId = nodeManager.getNodeId();
+         Notification notification = new Notification(nodeId == null ? null : nodeId.toString(), CoreNotificationType.CLUSTER_CONNECTION_STOPPED, props);
          managementService.sendNotification(notification);
       }
       executor.execute(new Runnable() {
@@ -747,6 +748,26 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
       TopologyMemberImpl localMember = new TopologyMemberImpl(nodeID, null, null, null, connector);
 
       topology.updateAsLive(nodeID, localMember);
+   }
+
+
+   @Override
+   public ClusterConnectionMetrics getMetrics() {
+      long messagesPendingAcknowledgement = 0;
+      long messagesAcknowledged = 0;
+      for (MessageFlowRecord record : records.values()) {
+         final BridgeMetrics metrics = record.getBridge() != null ? record.getBridge().getMetrics() : null;
+         messagesPendingAcknowledgement += metrics != null ? metrics.getMessagesPendingAcknowledgement() : 0;
+         messagesAcknowledged += metrics != null ? metrics.getMessagesAcknowledged() : 0;
+      }
+
+      return new ClusterConnectionMetrics(messagesPendingAcknowledgement, messagesAcknowledged);
+   }
+
+   @Override
+   public BridgeMetrics getBridgeMetrics(String nodeId) {
+      final MessageFlowRecord record = records.get(nodeId);
+      return record != null && record.getBridge() != null ? record.getBridge().getMetrics() : null;
    }
 
    private void createNewRecord(final long eventUID,
@@ -1059,6 +1080,10 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
                doUnProposalReceived(message);
                break;
             }
+            case SESSION_CREATED: {
+               doSessionCreated(message);
+               break;
+            }
             default: {
                throw ActiveMQMessageBundle.BUNDLE.invalidType(ntype);
             }
@@ -1219,7 +1244,7 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
             return;
          }
 
-         RemoteQueueBinding binding = new RemoteQueueBindingImpl(server.getStorageManager().generateID(), queueAddress, clusterName, routingName, queueID, filterString, queue, bridge.getName(), distance + 1);
+         RemoteQueueBinding binding = new RemoteQueueBindingImpl(server.getStorageManager().generateID(), queueAddress, clusterName, routingName, queueID, filterString, queue, bridge.getName(), distance + 1, messageLoadBalancingType);
 
          if (logger.isTraceEnabled()) {
             logger.trace("Adding binding " + clusterName + " into " + ClusterConnectionImpl.this);
@@ -1282,6 +1307,19 @@ public final class ClusterConnectionImpl implements ClusterConnection, AfterConn
          }
 
          binding.disconnect();
+      }
+
+      private synchronized void doSessionCreated(final ClientMessage message) throws Exception {
+         if (logger.isTraceEnabled()) {
+            logger.trace(ClusterConnectionImpl.this + " session created " + message);
+         }
+         TypedProperties props = new TypedProperties();
+         props.putSimpleStringProperty(ManagementHelper.HDR_CONNECTION_NAME, message.getSimpleStringProperty(ManagementHelper.HDR_CONNECTION_NAME));
+         props.putSimpleStringProperty(ManagementHelper.HDR_REMOTE_ADDRESS, message.getSimpleStringProperty(ManagementHelper.HDR_REMOTE_ADDRESS));
+         props.putSimpleStringProperty(ManagementHelper.HDR_CLIENT_ID, message.getSimpleStringProperty(ManagementHelper.HDR_CLIENT_ID));
+         props.putSimpleStringProperty(ManagementHelper.HDR_PROTOCOL_NAME, message.getSimpleStringProperty(ManagementHelper.HDR_PROTOCOL_NAME));
+         props.putIntProperty(ManagementHelper.HDR_DISTANCE, message.getIntProperty(ManagementHelper.HDR_DISTANCE) + 1);
+         managementService.sendNotification(new Notification(null, CoreNotificationType.SESSION_CREATED, props));
       }
 
       private synchronized void doConsumerCreated(final ClientMessage message) throws Exception {

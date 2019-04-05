@@ -43,8 +43,6 @@ import org.apache.activemq.artemis.core.journal.impl.JournalFile;
 import org.apache.activemq.artemis.core.paging.PagedMessage;
 import org.apache.activemq.artemis.core.paging.PagingManager;
 import org.apache.activemq.artemis.core.paging.impl.Page;
-import org.apache.activemq.artemis.core.paging.impl.PagingManagerImpl;
-import org.apache.activemq.artemis.core.paging.impl.PagingStoreFactoryNIO;
 import org.apache.activemq.artemis.core.persistence.StorageManager;
 import org.apache.activemq.artemis.core.persistence.impl.journal.AbstractJournalStorageManager.JournalContent;
 import org.apache.activemq.artemis.core.persistence.impl.journal.LargeServerMessageInSync;
@@ -150,6 +148,20 @@ public final class ReplicationEndpoint implements ChannelHandler, ActiveMQCompon
       }
 
       journals[id] = journal;
+   }
+
+   /**
+    * This is for tests basically, do not use it as its API is not guaranteed for future usage.
+    */
+   public void pause() {
+      started = false;
+   }
+
+   /**
+    * This is for tests basically, do not use it as its API is not guaranteed for future usage.
+    */
+   public void resume() {
+      started = true;
    }
 
    @Override
@@ -262,7 +274,8 @@ public final class ReplicationEndpoint implements ChannelHandler, ActiveMQCompon
             journalLoadInformation[jc.typeByte] = journalsHolder.get(jc).loadSyncOnly(JournalState.SYNCING);
          }
 
-         pageManager = new PagingManagerImpl(new PagingStoreFactoryNIO(storageManager, config.getPagingLocation(), config.getJournalBufferTimeout_NIO(), server.getScheduledPool(), server.getIOExecutorFactory(), config.isJournalSyncNonTransactional(), criticalErrorListener), server.getAddressSettingsRepository());
+
+         pageManager = server.createPagingManager();
 
          pageManager.start();
 
@@ -446,6 +459,10 @@ public final class ReplicationEndpoint implements ChannelHandler, ActiveMQCompon
       }
 
       if (data == null) {
+         // this means close file
+         if (channel1.isOpen()) {
+            channel1.close();
+         }
          return;
       }
 

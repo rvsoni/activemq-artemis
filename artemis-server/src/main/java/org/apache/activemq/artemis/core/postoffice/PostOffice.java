@@ -24,6 +24,7 @@ import java.util.Set;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.Pair;
 import org.apache.activemq.artemis.api.core.SimpleString;
+import org.apache.activemq.artemis.core.filter.Filter;
 import org.apache.activemq.artemis.core.server.ActiveMQComponent;
 import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.core.server.Queue;
@@ -66,10 +67,17 @@ public interface PostOffice extends ActiveMQComponent {
 
    QueueBinding updateQueue(SimpleString name,
                             RoutingType routingType,
+                            Filter filter,
                             Integer maxConsumers,
                             Boolean purgeOnNoConsumers,
                             Boolean exclusive,
-                            SimpleString user) throws Exception;
+                            Boolean groupRebalance,
+                            Integer groupBuckets,
+                            Boolean nonDestructive,
+                            Integer consumersBeforeDispatch,
+                            Long delayBeforeDispatch,
+                            SimpleString user,
+                            Boolean configurationManaged) throws Exception;
 
    List<Queue> listQueuesForAddress(SimpleString address) throws Exception;
 
@@ -150,6 +158,8 @@ public interface PostOffice extends ActiveMQComponent {
 
    // we can't start expiry scanner until the system is load otherwise we may get weird races - https://issues.jboss.org/browse/HORNETQ-1142
    void startExpiryScanner();
+
+   void startAddressQueueScanner();
 
    boolean isAddressBound(SimpleString address) throws Exception;
 

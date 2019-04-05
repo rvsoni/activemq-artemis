@@ -45,11 +45,17 @@ public interface Queue extends Bindable,CriticalComponent {
 
    Filter getFilter();
 
+   void setFilter(Filter filter);
+
    PageSubscription getPageSubscription();
 
    RoutingType getRoutingType();
 
    void setRoutingType(RoutingType routingType);
+
+   /** the current queue and consumer settings will allow use of the Reference Execution and callback.
+    *  This is because  */
+   boolean allowsReferenceCallback();
 
    boolean isDurable();
 
@@ -60,6 +66,12 @@ public interface Queue extends Bindable,CriticalComponent {
     */
    boolean isDurableMessage();
 
+   boolean isAutoDelete();
+
+   long getAutoDeleteDelay();
+
+   long getAutoDeleteMessageCount();
+
    boolean isTemporary();
 
    boolean isAutoCreated();
@@ -68,15 +80,47 @@ public interface Queue extends Bindable,CriticalComponent {
 
    void setPurgeOnNoConsumers(boolean value);
 
+   int getConsumersBeforeDispatch();
+
+   void setConsumersBeforeDispatch(int consumersBeforeDispatch);
+
+   long getDelayBeforeDispatch();
+
+   void setDelayBeforeDispatch(long delayBeforeDispatch);
+
+   long getDispatchStartTime();
+
+   boolean isDispatching();
+
+   void setDispatching(boolean dispatching);
+
    boolean isExclusive();
 
    void setExclusive(boolean value);
 
    boolean isLastValue();
 
+   SimpleString getLastValueKey();
+
+   boolean isNonDestructive();
+
+   void setNonDestructive(boolean nonDestructive);
+
    int getMaxConsumers();
 
    void setMaxConsumer(int maxConsumers);
+
+   int getGroupBuckets();
+
+   void setGroupBuckets(int groupBuckets);
+
+   boolean isGroupRebalance();
+
+   void setGroupRebalance(boolean groupRebalance);
+
+   boolean isConfigurationManaged();
+
+   void setConfigurationManaged(boolean configurationManaged);
 
    void addConsumer(Consumer consumer) throws Exception;
 
@@ -84,7 +128,9 @@ public interface Queue extends Bindable,CriticalComponent {
 
    int getConsumerCount();
 
-   /**
+   long getConsumerRemovedTimestamp();
+
+    /**
     * This will set a reference counter for every consumer present on the queue.
     * The ReferenceCounter will know what to do when the counter became zeroed.
     * This is used to control what to do with temporary queues, especially
@@ -207,7 +253,7 @@ public interface Queue extends Bindable,CriticalComponent {
    int deleteMatchingReferences(Filter filter) throws Exception;
 
    default int deleteMatchingReferences(int flushLImit, Filter filter) throws Exception {
-      return deleteMatchingReferences(flushLImit, filter, AckReason.NORMAL);
+      return deleteMatchingReferences(flushLImit, filter, AckReason.KILLED);
    }
 
    int deleteMatchingReferences(int flushLImit, Filter filter, AckReason ackReason) throws Exception;
@@ -363,5 +409,9 @@ public interface Queue extends Bindable,CriticalComponent {
 
    /** This is to perform a check on the counter again */
    void recheckRefCount(OperationContext context);
+
+   default void errorProcessing(Consumer consumer, Throwable t, MessageReference messageReference) {
+
+   }
 
 }

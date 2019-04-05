@@ -39,13 +39,14 @@ import io.airlift.airline.Arguments;
 import io.airlift.airline.Command;
 import io.airlift.airline.Option;
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
+import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.cli.CLIException;
 import org.apache.activemq.artemis.cli.commands.util.HashUtil;
 import org.apache.activemq.artemis.cli.commands.util.SyncCalculation;
 import org.apache.activemq.artemis.core.server.JournalType;
 import org.apache.activemq.artemis.core.server.cluster.impl.MessageLoadBalancingType;
-import org.apache.activemq.artemis.jlibaio.LibaioContext;
-import org.apache.activemq.artemis.jlibaio.LibaioFile;
+import org.apache.activemq.artemis.nativo.jlibaio.LibaioContext;
+import org.apache.activemq.artemis.nativo.jlibaio.LibaioFile;
 import org.apache.activemq.artemis.utils.FileUtil;
 
 /**
@@ -117,6 +118,9 @@ public class Create extends InputAbstract {
 
    @Option(name = "--http-host", description = "The host name to use for embedded web server (Default: localhost)")
    private String httpHost = HTTP_HOST;
+
+   @Option(name = "--relax-jolokia", description = "disable strict checking on jolokia-access.xml")
+   private boolean relaxJolokia;
 
    @Option(name = "--ping", description = "A comma separated string to be passed on to the broker config as network-check-list. The broker will shutdown when all these addresses are unreachable.")
    private String ping;
@@ -226,7 +230,7 @@ public class Create extends InputAbstract {
    @Option(name = "--no-web", description = "Remove the web-server definition from bootstrap.xml")
    private boolean noWeb;
 
-   @Option(name = "--queues", description = "Comma separated list of queues.")
+   @Option(name = "--queues", description = "Comma separated list of queues with the option to specify a routing type. (ex: --queues myqueue,mytopic:multicast)")
    private String queues;
 
    @Option(name = "--addresses", description = "Comma separated list of addresses ")
@@ -773,6 +777,13 @@ public class Create extends InputAbstract {
       filters.remove("${artemis.instance}");
       writeEtc(ETC_BOOTSTRAP_XML, etcFolder, filters, false);
       writeEtc(ETC_MANAGEMENT_XML, etcFolder, filters, false);
+
+      if (relaxJolokia) {
+         filters.put("${jolokia.options}", "<!-- option relax-jolokia used, so strict-checking will be removed here -->");
+      } else {
+         filters.put("${jolokia.options}", "<!-- Check for the proper origin on the server side, too -->\n" +
+                     "        <strict-checking/>");
+      }
       writeEtc(ETC_JOLOKIA_ACCESS_XML, etcFolder, filters, false);
 
       context.out.println("");
@@ -890,10 +901,20 @@ public class Create extends InputAbstract {
       printWriter.println();
 
       for (String str : getQueueList()) {
-         printWriter.println("         <address name=\"" + str + "\">");
-         printWriter.println("            <anycast>");
-         printWriter.println("               <queue name=\"" + str + "\" />");
-         printWriter.println("            </anycast>");
+         String[] seg = str.split(":");
+         String name = seg[0].trim();
+         // default routing type to anycast if not specified
+         String routingType = (seg.length == 2 ? seg[1].trim() : "anycast");
+         try {
+            RoutingType.valueOf(routingType.toUpperCase());
+         } catch (Exception e) {
+            e.printStackTrace();
+            System.err.println("Invalid routing type: " + routingType);
+         }
+         printWriter.println("         <address name=\"" + name + "\">");
+         printWriter.println("            <" + routingType + ">");
+         printWriter.println("               <queue name=\"" + name + "\" />");
+         printWriter.println("            </" + routingType + ">");
          printWriter.println("         </address>");
       }
       for (String str : getAddressList()) {

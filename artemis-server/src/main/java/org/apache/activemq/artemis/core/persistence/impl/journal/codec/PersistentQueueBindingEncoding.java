@@ -50,7 +50,27 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
 
    public boolean lastValue;
 
+   public SimpleString lastValueKey;
+
+   public boolean nonDestructive;
+
+   public int consumersBeforeDispatch;
+
+   public long delayBeforeDispatch;
+
    public byte routingType;
+
+   public boolean configurationManaged;
+
+   public boolean groupRebalance;
+
+   public int groupBuckets;
+
+   public boolean autoDelete;
+
+   public long autoDeleteDelay;
+
+   public long autoDeleteMessageCount;
 
    public PersistentQueueBindingEncoding() {
    }
@@ -76,8 +96,28 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
          exclusive +
          ", lastValue=" +
          lastValue +
+         ", lastValueKey=" +
+         lastValueKey +
+         ", nonDestructive=" +
+         nonDestructive +
+         ", consumersBeforeDispatch=" +
+         consumersBeforeDispatch +
+         ", delayBeforeDispatch=" +
+         delayBeforeDispatch +
          ", routingType=" +
          routingType +
+         ", configurationManaged=" +
+         configurationManaged +
+         ", groupRebalance=" +
+         groupRebalance +
+         ", groupBuckets=" +
+         groupBuckets +
+         ", autoDelete=" +
+         autoDelete +
+         ", autoDeleteDelay=" +
+         autoDeleteDelay +
+         ", autoDeleteMessageCount=" +
+         autoDeleteMessageCount +
          "]";
    }
 
@@ -89,8 +129,18 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
                                          final int maxConsumers,
                                          final boolean purgeOnNoConsumers,
                                          final boolean exclusive,
+                                         final boolean groupRebalance,
+                                         final int groupBuckets,
                                          final boolean lastValue,
-                                         final byte routingType) {
+                                         final SimpleString lastValueKey,
+                                         final boolean nonDestructive,
+                                         final int consumersBeforeDispatch,
+                                         final long delayBeforeDispatch,
+                                         final boolean autoDelete,
+                                         final long autoDeleteDelay,
+                                         final long autoDeleteMessageCount,
+                                         final byte routingType,
+                                         final boolean configurationManaged) {
       this.name = name;
       this.address = address;
       this.filterString = filterString;
@@ -99,8 +149,18 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
       this.maxConsumers = maxConsumers;
       this.purgeOnNoConsumers = purgeOnNoConsumers;
       this.exclusive = exclusive;
+      this.groupRebalance = groupRebalance;
+      this.groupBuckets = groupBuckets;
       this.lastValue = lastValue;
+      this.lastValueKey = lastValueKey;
+      this.nonDestructive = nonDestructive;
+      this.consumersBeforeDispatch = consumersBeforeDispatch;
+      this.delayBeforeDispatch = delayBeforeDispatch;
+      this.autoDelete = autoDelete;
+      this.autoDeleteDelay = autoDeleteDelay;
+      this.autoDeleteMessageCount = autoDeleteMessageCount;
       this.routingType = routingType;
+      this.configurationManaged = configurationManaged;
    }
 
    @Override
@@ -140,6 +200,16 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
    @Override
    public boolean isAutoCreated() {
       return autoCreated;
+   }
+
+   @Override
+   public boolean isConfigurationManaged() {
+      return configurationManaged;
+   }
+
+   @Override
+   public void setConfigurationManaged(boolean configurationManaged) {
+      this.configurationManaged = configurationManaged;
    }
 
    @Override
@@ -196,6 +266,46 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
    }
 
    @Override
+   public SimpleString getLastValueKey() {
+      return lastValueKey;
+   }
+
+   @Override
+   public void setLastValueKey(SimpleString lastValueKey) {
+      this.lastValueKey = lastValueKey;
+   }
+
+   @Override
+   public boolean isNonDestructive() {
+      return nonDestructive;
+   }
+
+   @Override
+   public void setNonDestructive(boolean nonDestructive) {
+      this.nonDestructive = nonDestructive;
+   }
+
+   @Override
+   public int getConsumersBeforeDispatch() {
+      return consumersBeforeDispatch;
+   }
+
+   @Override
+   public void setConsumersBeforeDispatch(int consumersBeforeDispatch) {
+      this.consumersBeforeDispatch = consumersBeforeDispatch;
+   }
+
+   @Override
+   public long getDelayBeforeDispatch() {
+      return delayBeforeDispatch;
+   }
+
+   @Override
+   public void setDelayBeforeDispatch(long delayBeforeDispatch) {
+      this.delayBeforeDispatch = delayBeforeDispatch;
+   }
+
+   @Override
    public byte getRoutingType() {
       return routingType;
    }
@@ -203,6 +313,31 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
    @Override
    public void setRoutingType(byte routingType) {
       this.routingType = routingType;
+   }
+
+   @Override
+   public boolean isGroupRebalance() {
+      return groupRebalance;
+   }
+
+   @Override
+   public int getGroupBuckets() {
+      return groupBuckets;
+   }
+
+   @Override
+   public boolean isAutoDelete() {
+      return autoDelete;
+   }
+
+   @Override
+   public long getAutoDeleteDelay() {
+      return autoDeleteDelay;
+   }
+
+   @Override
+   public long getAutoDeleteMessageCount() {
+      return autoDeleteMessageCount;
    }
 
    @Override
@@ -246,6 +381,56 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
       } else {
          lastValue = ActiveMQDefaultConfiguration.getDefaultLastValue();
       }
+      if (buffer.readableBytes() > 0) {
+         configurationManaged = buffer.readBoolean();
+      } else {
+         configurationManaged = false;
+      }
+      if (buffer.readableBytes() > 0) {
+         consumersBeforeDispatch = buffer.readInt();
+      } else {
+         consumersBeforeDispatch = ActiveMQDefaultConfiguration.getDefaultConsumersBeforeDispatch();
+      }
+      if (buffer.readableBytes() > 0) {
+         delayBeforeDispatch = buffer.readLong();
+      } else {
+         delayBeforeDispatch = ActiveMQDefaultConfiguration.getDefaultDelayBeforeDispatch();
+      }
+      if (buffer.readableBytes() > 0) {
+         lastValueKey = buffer.readNullableSimpleString();
+      } else {
+         lastValueKey = ActiveMQDefaultConfiguration.getDefaultLastValueKey();
+      }
+      if (buffer.readableBytes() > 0) {
+         nonDestructive = buffer.readBoolean();
+      } else {
+         nonDestructive = ActiveMQDefaultConfiguration.getDefaultNonDestructive();
+      }
+      if (buffer.readableBytes() > 0) {
+         groupRebalance = buffer.readBoolean();
+      } else {
+         groupRebalance = ActiveMQDefaultConfiguration.getDefaultGroupRebalance();
+      }
+      if (buffer.readableBytes() > 0) {
+         groupBuckets = buffer.readInt();
+      } else {
+         groupBuckets = ActiveMQDefaultConfiguration.getDefaultGroupBuckets();
+      }
+      if (buffer.readableBytes() > 0) {
+         autoDelete = buffer.readBoolean();
+      } else {
+         autoDelete = ActiveMQDefaultConfiguration.getDefaultQueueAutoDelete(autoCreated);
+      }
+      if (buffer.readableBytes() > 0) {
+         autoDeleteDelay = buffer.readLong();
+      } else {
+         autoDeleteDelay = ActiveMQDefaultConfiguration.getDefaultQueueAutoDeleteDelay();
+      }
+      if (buffer.readableBytes() > 0) {
+         autoDeleteMessageCount = buffer.readLong();
+      } else {
+         autoDeleteMessageCount = ActiveMQDefaultConfiguration.getDefaultQueueAutoDeleteMessageCount();
+      }
    }
 
    @Override
@@ -260,6 +445,16 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
       buffer.writeByte(routingType);
       buffer.writeBoolean(exclusive);
       buffer.writeBoolean(lastValue);
+      buffer.writeBoolean(configurationManaged);
+      buffer.writeInt(consumersBeforeDispatch);
+      buffer.writeLong(delayBeforeDispatch);
+      buffer.writeNullableSimpleString(lastValueKey);
+      buffer.writeBoolean(nonDestructive);
+      buffer.writeBoolean(groupRebalance);
+      buffer.writeInt(groupBuckets);
+      buffer.writeBoolean(autoDelete);
+      buffer.writeLong(autoDeleteDelay);
+      buffer.writeLong(autoDeleteMessageCount);
    }
 
    @Override
@@ -271,7 +466,18 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
          DataConstants.SIZE_BOOLEAN +
          DataConstants.SIZE_BYTE +
          DataConstants.SIZE_BOOLEAN +
-         DataConstants.SIZE_BOOLEAN;
+         DataConstants.SIZE_BOOLEAN +
+         DataConstants.SIZE_BOOLEAN +
+         DataConstants.SIZE_INT +
+         DataConstants.SIZE_LONG +
+         SimpleString.sizeofNullableString(lastValueKey) +
+         DataConstants.SIZE_BOOLEAN +
+         DataConstants.SIZE_BOOLEAN +
+         DataConstants.SIZE_INT +
+         DataConstants.SIZE_BOOLEAN +
+         DataConstants.SIZE_LONG +
+         DataConstants.SIZE_LONG;
+
    }
 
    private SimpleString createMetadata() {

@@ -662,6 +662,32 @@ public class ActiveMQResourceAdapter implements ResourceAdapter, Serializable {
    }
 
    /**
+    * Set enable1xPrefixes
+    *
+    * @param enable1xPrefixes The value
+    */
+   public void setEnable1xPrefixes(final Boolean enable1xPrefixes) {
+      if (logger.isTraceEnabled()) {
+         ActiveMQRALogger.LOGGER.trace("setEnable1xPrefixes(" + enable1xPrefixes + ")");
+      }
+
+      raProperties.setEnable1xPrefixes(enable1xPrefixes);
+   }
+
+   /**
+    * Get isCacheDestinations
+    *
+    * @return The value
+    */
+   public Boolean isEnable1xPrefixes() {
+      if (logger.isTraceEnabled()) {
+         ActiveMQRALogger.LOGGER.trace("isEnable1xPrefixes()");
+      }
+
+      return raProperties.isEnable1xPrefixes();
+   }
+
+   /**
     * Set compressLargeMessage
     *
     * @param compressLargeMessage The value
@@ -880,6 +906,14 @@ public class ActiveMQResourceAdapter implements ResourceAdapter, Serializable {
       }
 
       raProperties.setProducerMaxRate(producerMaxRate);
+   }
+
+   public void setUseTopologyForLoadBalancing(boolean useTopologyForLoadBalancing) {
+      raProperties.setUseTopologyForLoadBalancing(useTopologyForLoadBalancing);
+   }
+
+   public boolean isUseTopologyForLoadBalancing() {
+      return raProperties.isUseTopologyForLoadBalancing();
    }
 
    /**
@@ -1766,6 +1800,10 @@ public class ActiveMQResourceAdapter implements ResourceAdapter, Serializable {
          throw new IllegalArgumentException("must provide either TransportType or DiscoveryGroupAddress and DiscoveryGroupPort for ResourceAdapter Connection Factory");
       }
 
+      cf.setUseTopologyForLoadBalancing(raProperties.isUseTopologyForLoadBalancing());
+
+      cf.setEnableSharedClientID(true);
+      cf.setEnable1xPrefixes(raProperties.isEnable1xPrefixes() == null ? false : raProperties.isEnable1xPrefixes());
       setParams(cf, overrideProperties);
       return cf;
    }
@@ -1832,6 +1870,8 @@ public class ActiveMQResourceAdapter implements ResourceAdapter, Serializable {
 
       cf.setReconnectAttempts(0);
       cf.setInitialConnectAttempts(0);
+      cf.setEnable1xPrefixes(raProperties.isEnable1xPrefixes() == null ? false : raProperties.isEnable1xPrefixes());
+      cf.setEnableSharedClientID(true);
       return cf;
    }
 

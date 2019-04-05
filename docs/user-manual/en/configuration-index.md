@@ -79,6 +79,16 @@ This is to help you customize artemis on embedded systems.
 This describes the root of the XML configuration. You will see here also multiple sub-types listed.
 For example on the main config you will have bridges and at the [list of bridge](#bridge-type) type we will describe the properties for that configuration.
 
+> **Warning**
+>
+> The default values listed below are the values which will be used if
+> the configuration parameter is **not set** either programmatically or
+> via `broker.xml`. Some of these values are set in the `broker.xml`
+> which is available out-of-the-box. Any values set in the
+> out-of-the-box configuration will override the default values listed
+> here. Please consult your specific configuration to know which values
+> will actually be used when the broker is running.
+
 Name | Description | Default
 ---|---|---
 [acceptors](configuring-transports.md#acceptors) | a list of remoting acceptors | n/a
@@ -119,6 +129,7 @@ Name | Description | Default
 [journal-compact-min-files](persistence.md#configuring-the-message-journal) | The minimal number of data files before we can start compacting. Setting this to 0 means compacting is disabled. | 10
 [journal-compact-percentage](persistence.md#configuring-the-message-journal) | The percentage of live data on which we consider compacting the journal. | 30
 [journal-directory](persistence.md#configuring-the-message-journal) | the directory to store the journal files in. | `data/journal`
+[node-manager-lock-directory](persistence.md#configuring-the-message-journal) | the directory to store the node manager lock file. | same of `journal-directory`
 [journal-file-size](persistence.md#configuring-the-message-journal) | the size (in bytes) of each journal file. | 10MB
 [journal-lock-acquisition-timeout](persistence.md#configuring-the-message-journal) | how long (in ms) to wait to acquire a file lock on the journal. | -1
 [journal-max-io](persistence.md#configuring-the-message-journal) | the maximum number of write requests that can be in the ASYNCIO queue at any one time. | 4096 for ASYNCIO; 1 for NIO; ignored for MAPPED
@@ -135,7 +146,7 @@ log-delegate-factory-class-name | **deprecated** the name of the factory class t
 [management-notification-address](management.md#configuring-the-management-notification-address) | the name of the address that consumers bind to receive management notifications. | `activemq.notifications`
 [mask-password](masking-passwords.md) | This option controls whether passwords in server configuration need be masked. If set to "true" the passwords are masked. | `false`
 [max-saved-replicated-journals-size](ha.md#data-replication) | This specifies how many times a replicated backup server can restart after moving its files on start. Once there are this number of backup journal files the server will stop permanently after if fails back. -1 Means no Limit; 0 don't keep a copy at all. | 2
-[max-disk-usage](paging.md#max-disk-usage) | The max percentage of data we should use from disks. The System will block while the disk is full. Disable by setting -1. | 100
+[max-disk-usage](paging.md#max-disk-usage) | The max percentage of data we should use from disks. The broker will block while the disk is full. Disable by setting -1. | 90
 [memory-measure-interval](perf-tuning.md) | frequency to sample JVM memory in ms (or -1 to disable memory sampling). | -1
 [memory-warning-threshold](perf-tuning.md)| Percentage of available memory which will trigger a warning log. | 25
 [message-counter-enabled](management.md#message-counters) | true means that message counters are enabled. | `false`
@@ -143,6 +154,7 @@ log-delegate-factory-class-name | **deprecated** the name of the factory class t
 [message-counter-sample-period](management.md#message-counters) | the sample period (in ms) to use for message counters. | 10000
 [message-expiry-scan-period](message-expiry.md#configuring-the-expiry-reaper-thread) | how often (in ms) to scan for expired messages. | 30000
 [message-expiry-thread-priority](message-expiry.md#configuring-the-expiry-reaper-thread)| the priority of the thread expiring messages. | 3
+[address-queue-scan-period](address-model.md#configuring-addresses-and-queues-via-address-settings) | how often (in ms) to scan for addresses & queues that should be removed. | 30000
 name | node name; used in topology notifications if set. | n/a
 [password-codec](masking-passwords.md) | the name of the class (and optional configuration properties) used to decode masked passwords. Only valid when `mask-password` is `true`. | n/a
 [page-max-concurrent-io](paging.md) | The max number of concurrent reads allowed on paging. | 5
@@ -204,6 +216,8 @@ Name | Description | Default
 [last-value-queue](last-value-queues.md) | **deprecated** Queue is a last value queue; see `default-last-value-queue` instead | `false`
 [default-last-value-queue](last-value-queues.md)| `last-value` value if none is set on the queue | `false`
 [default-exclusive-queue](exclusive-queues.md) | `exclusive` value if none is set on the queue | `false`
+[default-consumers-before-dispatch](exclusive-queues.md) | `consumers-before-dispatch` value if none is set on the queue | 0
+[default-delay-before-dispatch](exclusive-queues.md) | `delay-before-dispatch` value if none is set on the queue | -1
 [redistribution-delay](clusters.md) | Timeout before redistributing values after no consumers | -1
 [send-to-dla-on-no-route](address-model.md) | Forward messages to DLA when no queues subscribing | `false`
 [slow-consumer-threshold](slow-consumers.md) | Min rate of msgs/sec consumed before a consumer is considered "slow" | -1
@@ -214,10 +228,13 @@ Name | Description | Default
 [auto-create-jms-topics](address-model.md#configuring-addresses-and-queues-via-address-settings)| **deprecated** Create JMS topics automatically; see `auto-create-queues` & `auto-create-addresses` | `true`
 [auto-delete-jms-topics](address-model.md#configuring-addresses-and-queues-via-address-settings)| **deprecated** Delete JMS topics automatically; see `auto-create-queues` & `auto-create-addresses` | `true`
 [auto-create-queues](address-model.md#configuring-addresses-and-queues-via-address-settings) | Create queues automatically | `true`
-[auto-delete-queues](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delete queues automatically | `true`
+[auto-delete-queues](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delete auto-created queues automatically | `true`
+[auto-delete-created-queues](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delete created queues automatically | `false`
+[auto-delete-queues-delay](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delay for deleting auto-created queues | 0
 [config-delete-queues](config-reload.md)| How to deal with queues deleted from XML at runtime| `OFF`
 [auto-create-addresses](address-model.md#configuring-addresses-and-queues-via-address-settings) | Create addresses automatically | `true`
-[auto-delete-addresses](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delete addresses automatically | `true`
+[auto-delete-addresses](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delete auto-created addresses automatically | `true`
+[auto-delete-addresses-delay](address-model.md#configuring-addresses-and-queues-via-address-settings) | Delay for deleting auto-created addresses | 0
 [config-delete-addresses](config-reload.md) | How to deal with addresses deleted from XML at runtime | `OFF`
 [management-browse-page-size]() | Number of messages a management resource can browse| 200
 [default-purge-on-no-consumers](address-model.md#non-durable-subscription-queue) | `purge-on-no-consumers` value if none is set on the queue | `false`
@@ -249,6 +266,7 @@ Name | Description | Default
 [user](core-bridges.md) | Username for the bridge, the default is the cluster username. | n/a
 [password](core-bridges.md)| Password for the bridge, default is the cluster password. | n/a
 [reconnect-attempts-same-node](core-bridges.md) | Number of retries before trying another node. | 10
+[routing-type](core-bridges.md) | how to set the routing-type on the bridged message | `PASS`
 
 ## broadcast-group type
 
@@ -315,6 +333,7 @@ Name | Description
 [address](diverts.md) | the address this divert will divert from
 [forwarding-address](diverts.md) | the forwarding address for the divert
 [filter](diverts.md) | optional core filter expression
+[routing-type](diverts.md) | how to set the routing-type on the diverted message. Default=`STRIP`
 
 
 ## address type
@@ -338,6 +357,8 @@ user | the name of the user to associate with the creation of the queue | n/a
 [purge-on-no-consumers](address-model.md#non-durable-subscription-queue) | whether or not to delete all messages and prevent routing when no consumers are connected | `false`
 [exclusive](exclusive-queues.md) | only deliver messages to one of the connected consumers | `false`
 [last-value](last-value-queues.md) | use last-value semantics | `false`
+consumers-before-dispatch | number of consumers required before dispatching messages | 0
+delay-before-dispatch | milliseconds to wait for `consumers-before-dispatch` to be met before dispatching messages anyway | -1 (wait forever)
 
 
 ## security-setting type

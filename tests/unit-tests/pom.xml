@@ -19,7 +19,7 @@
    <parent>
       <groupId>org.apache.activemq.tests</groupId>
       <artifactId>artemis-tests-pom</artifactId>
-      <version>2.7.0-SNAPSHOT</version>
+      <version>2.8.0-SNAPSHOT</version>
    </parent>
 
    <artifactId>unit-tests</artifactId>
@@ -90,8 +90,8 @@
       </dependency>
       <dependency>
          <groupId>org.apache.activemq</groupId>
-         <artifactId>artemis-native</artifactId>
-         <version>${project.version}</version>
+         <artifactId>activemq-artemis-native</artifactId>
+         <version>${activemq-artemis-native-version}</version>
       </dependency>
       <dependency>
          <groupId>org.apache.geronimo.specs</groupId>
@@ -151,19 +151,19 @@
       <dependency>
          <groupId>org.apache.activemq</groupId>
          <artifactId>artemis-junit</artifactId>
-         <version>2.7.0-SNAPSHOT</version>
+         <version>${project.version}</version>
          <scope>test</scope>
       </dependency>
       <dependency>
          <groupId>org.apache.activemq.tests</groupId>
          <artifactId>artemis-test-support</artifactId>
-         <version>2.7.0-SNAPSHOT</version>
+         <version>${project.version}</version>
          <scope>test</scope>
       </dependency>
       <dependency>
          <groupId>io.netty</groupId>
          <artifactId>netty-tcnative-boringssl-static</artifactId>
-         <version>2.0.7.Final</version>
+         <version>${netty-tcnative-version}</version>
          <scope>test</scope>
       </dependency>
 

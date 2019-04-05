@@ -17,6 +17,7 @@
 package org.apache.activemq.artemis.protocol.amqp.util;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.qpid.proton.codec.ReadableBuffer;
 import org.apache.qpid.proton.codec.WritableBuffer;
@@ -85,6 +86,11 @@ public class NettyWritable implements WritableBuffer {
    }
 
    @Override
+   public void ensureRemaining(int remaining) {
+      nettyBuffer.ensureWritable(remaining);
+   }
+
+   @Override
    public int position() {
       return nettyBuffer.writerIndex();
    }
@@ -104,6 +110,11 @@ public class NettyWritable implements WritableBuffer {
    }
 
    @Override
+   public void put(String value) {
+      nettyBuffer.writeCharSequence(value, StandardCharsets.UTF_8);
+   }
+
+   @Override
    public int limit() {
       return nettyBuffer.capacity();
    }
@@ -111,11 +122,9 @@ public class NettyWritable implements WritableBuffer {
    @Override
    public void put(ReadableBuffer buffer) {
       if (buffer.hasArray()) {
-         nettyBuffer.writeBytes(buffer.array(), buffer.arrayOffset(), buffer.remaining());
+         nettyBuffer.writeBytes(buffer.array(), buffer.arrayOffset() + buffer.position(), buffer.remaining());
       } else {
-         while (buffer.hasRemaining()) {
-            nettyBuffer.writeByte(buffer.get());
-         }
+         nettyBuffer.writeBytes(buffer.byteBuffer());
       }
    }
 }

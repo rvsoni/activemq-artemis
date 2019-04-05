@@ -19,10 +19,14 @@ package org.apache.activemq.artemis.utils.collections;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.activemq.artemis.api.core.ActiveMQPropertyConversionException;
@@ -53,25 +57,29 @@ import static org.apache.activemq.artemis.utils.DataConstants.STRING;
  */
 public class TypedProperties {
 
-   private static final SimpleString AMQ_PROPNAME = new SimpleString("_AMQ_");
-
    private Map<SimpleString, PropertyValue> properties;
 
-   private volatile int size;
+   private int size;
 
+   private final Predicate<SimpleString> internalPropertyPredicate;
    private boolean internalProperties;
 
    public TypedProperties() {
+      this.internalPropertyPredicate = null;
+   }
+
+   public TypedProperties(Predicate<SimpleString> internalPropertyPredicate) {
+      this.internalPropertyPredicate = internalPropertyPredicate;
    }
 
    /**
     *  Return the number of properties
     * */
-   public int size() {
-      return properties.size();
+   public synchronized int size() {
+      return properties == null ? 0 : properties.size();
    }
 
-   public int getMemoryOffset() {
+   public synchronized int getMemoryOffset() {
       // The estimate is basically the encode size + 2 object references for each entry in the map
       // Note we don't include the attributes or anything else since they already included in the memory estimate
       // of the ServerMessage
@@ -83,78 +91,61 @@ public class TypedProperties {
       synchronized (other) {
          properties = other.properties == null ? null : new HashMap<>(other.properties);
          size = other.size;
+         internalPropertyPredicate = other.internalPropertyPredicate;
+         internalProperties = other.internalProperties;
       }
    }
 
-   public boolean hasInternalProperties() {
-      return internalProperties;
-   }
-
    public void putBooleanProperty(final SimpleString key, final boolean value) {
-      checkCreateProperties();
       doPutValue(key, BooleanValue.of(value));
    }
 
    public void putByteProperty(final SimpleString key, final byte value) {
-      checkCreateProperties();
       doPutValue(key, ByteValue.valueOf(value));
    }
 
    public void putBytesProperty(final SimpleString key, final byte[] value) {
-      checkCreateProperties();
       doPutValue(key, value == null ? NullValue.INSTANCE : new BytesValue(value));
    }
 
    public void putShortProperty(final SimpleString key, final short value) {
-      checkCreateProperties();
       doPutValue(key, new ShortValue(value));
    }
 
    public void putIntProperty(final SimpleString key, final int value) {
-      checkCreateProperties();
       doPutValue(key, new IntValue(value));
    }
 
    public void putLongProperty(final SimpleString key, final long value) {
-      checkCreateProperties();
       doPutValue(key, new LongValue(value));
    }
 
    public void putFloatProperty(final SimpleString key, final float value) {
-      checkCreateProperties();
       doPutValue(key, new FloatValue(value));
    }
 
    public void putDoubleProperty(final SimpleString key, final double value) {
-      checkCreateProperties();
       doPutValue(key, new DoubleValue(value));
    }
 
    public void putSimpleStringProperty(final SimpleString key, final SimpleString value) {
-      checkCreateProperties();
       doPutValue(key, value == null ? NullValue.INSTANCE : new StringValue(value));
    }
 
    public void putNullValue(final SimpleString key) {
-      checkCreateProperties();
       doPutValue(key, NullValue.INSTANCE);
    }
 
    public void putCharProperty(final SimpleString key, final char value) {
-      checkCreateProperties();
       doPutValue(key, new CharValue(value));
    }
 
    public void putTypedProperties(final TypedProperties otherProps) {
-      if (otherProps == null || otherProps.properties == null) {
+      if (otherProps == null || otherProps == this || otherProps.properties == null) {
          return;
       }
 
-      checkCreateProperties();
-      Set<Entry<SimpleString, PropertyValue>> otherEntries = otherProps.properties.entrySet();
-      for (Entry<SimpleString, PropertyValue> otherEntry : otherEntries) {
-         doPutValue(otherEntry.getKey(), otherEntry.getValue());
-      }
+      otherProps.forEachInternal(this::doPutValue);
    }
 
    public Object getProperty(final SimpleString key) {
@@ -315,29 +306,78 @@ public class TypedProperties {
       return doRemoveProperty(key);
    }
 
-   public boolean containsProperty(final SimpleString key) {
-      if (size == 0) {
+   public synchronized boolean containsProperty(final SimpleString key) {
+      if (properties == null) {
          return false;
 
       } else {
          return properties.containsKey(key);
       }
    }
-
-   public Set<SimpleString> getPropertyNames() {
-      if (size == 0) {
+   public synchronized Set<SimpleString> getPropertyNames() {
+      if (properties == null) {
          return Collections.emptySet();
       } else {
-         return properties.keySet();
+         return new HashSet<>(properties.keySet());
+      }
+   }
+
+   public synchronized boolean clearInternalProperties() {
+      return internalProperties && removeInternalProperties();
+   }
+
+   private synchronized boolean removeInternalProperties() {
+      if (internalPropertyPredicate == null) {
+         return false;
+      }
+      if (properties == null) {
+         return false;
+      }
+      if (properties.isEmpty()) {
+         return false;
+      }
+      int removedBytes = 0;
+      boolean removed = false;
+      final Iterator<Entry<SimpleString, PropertyValue>> keyNameIterator = properties.entrySet().iterator();
+      while (keyNameIterator.hasNext()) {
+         final Entry<SimpleString, PropertyValue> entry = keyNameIterator.next();
+         final SimpleString propertyName = entry.getKey();
+         if (internalPropertyPredicate.test(propertyName)) {
+            final PropertyValue propertyValue = entry.getValue();
+            removedBytes += propertyName.sizeof() + propertyValue.encodeSize();
+            keyNameIterator.remove();
+            removed = true;
+         }
+      }
+      internalProperties = false;
+      size -= removedBytes;
+      return removed;
+   }
+
+   public synchronized void forEachKey(Consumer<SimpleString> action) {
+      if (properties != null) {
+         properties.keySet().forEach(action::accept);
+      }
+   }
+
+   public synchronized void forEach(BiConsumer<SimpleString, Object> action) {
+      if (properties != null) {
+         properties.forEach((k, v) -> action.accept(k, v.getValue()));
+      }
+   }
+
+   private synchronized void forEachInternal(BiConsumer<SimpleString, PropertyValue> action) {
+      if (properties != null) {
+         properties.forEach(action::accept);
       }
    }
 
    public synchronized void decode(final ByteBuf buffer,
                                    final TypedPropertiesDecoderPools keyValuePools) {
       byte b = buffer.readByte();
-
       if (b == DataConstants.NULL) {
          properties = null;
+         size = 0;
       } else {
          int numHeaders = buffer.readInt();
 
@@ -416,12 +456,13 @@ public class TypedProperties {
       }
    }
 
-   public synchronized void decode(final ByteBuf buffer) {
+   public void decode(final ByteBuf buffer) {
       decode(buffer, null);
    }
 
+
    public synchronized void encode(final ByteBuf buffer) {
-      if (properties == null) {
+      if (properties == null || size == 0) {
          buffer.writeByte(DataConstants.NULL);
       } else {
          buffer.writeByte(DataConstants.NOT_NULL);
@@ -438,26 +479,26 @@ public class TypedProperties {
       }
    }
 
-   public int getEncodeSize() {
-      if (properties == null) {
+   public synchronized int getEncodeSize() {
+      if (properties == null || size == 0) {
          return DataConstants.SIZE_BYTE;
       } else {
          return DataConstants.SIZE_BYTE + DataConstants.SIZE_INT + size;
       }
    }
 
-   public void clear() {
+   public synchronized void clear() {
       if (properties != null) {
          properties.clear();
       }
+      size = 0;
    }
 
    @Override
-   public String toString() {
+   public synchronized String toString() {
       StringBuilder sb = new StringBuilder("TypedProperties[");
 
       if (properties != null) {
-
          Iterator<Entry<SimpleString, PropertyValue>> iter = properties.entrySet().iterator();
 
          while (iter.hasNext()) {
@@ -505,15 +546,13 @@ public class TypedProperties {
 
    // Private ------------------------------------------------------------------------------------
 
-   private void checkCreateProperties() {
+   private synchronized void doPutValue(final SimpleString key, final PropertyValue value) {
+      if (!internalProperties && internalPropertyPredicate != null && internalPropertyPredicate.test(key)) {
+         internalProperties = true;
+      }
+
       if (properties == null) {
          properties = new HashMap<>();
-      }
-   }
-
-   private synchronized void doPutValue(final SimpleString key, final PropertyValue value) {
-      if (key.startsWith(AMQ_PROPNAME)) {
-         internalProperties = true;
       }
 
       PropertyValue oldValue = properties.put(key, value);
@@ -530,23 +569,20 @@ public class TypedProperties {
       }
 
       PropertyValue val = properties.remove(key);
-
       if (val == null) {
          return null;
       } else {
          size -= SimpleString.sizeofString(key) + val.encodeSize();
-
          return val.getValue();
       }
    }
 
-   private synchronized Object doGetProperty(final Object key) {
-      if (size == 0) {
+   private synchronized Object doGetProperty(final SimpleString key) {
+      if (properties == null) {
          return null;
       }
 
       PropertyValue val = properties.get(key);
-
       if (val == null) {
          return null;
       } else {
@@ -1003,21 +1039,41 @@ public class TypedProperties {
       }
    }
 
-   public boolean isEmpty() {
-      return properties.isEmpty();
+   public synchronized boolean isEmpty() {
+      if (properties == null) {
+         return true;
+      } else {
+         return properties.isEmpty();
+      }
    }
 
-   public Map<String, Object> getMap() {
-      Map<String, Object> m = new HashMap<>();
-      for (Entry<SimpleString, PropertyValue> entry : properties.entrySet()) {
-         Object val = entry.getValue().getValue();
-         if (val instanceof SimpleString) {
-            m.put(entry.getKey().toString(), ((SimpleString) val).toString());
-         } else {
-            m.put(entry.getKey().toString(), val);
+   public synchronized Set<String> getMapNames() {
+      if (properties == null) {
+         return Collections.emptySet();
+      } else {
+         Set<String> names = new HashSet<>(properties.size());
+         for (SimpleString name : properties.keySet()) {
+            names.add(name.toString());
          }
+         return names;
       }
-      return m;
+   }
+
+   public synchronized Map<String, Object> getMap() {
+      if (properties == null) {
+         return Collections.emptyMap();
+      } else {
+         Map<String, Object> m = new HashMap<>(properties.size());
+         for (Entry<SimpleString, PropertyValue> entry : properties.entrySet()) {
+            Object val = entry.getValue().getValue();
+            if (val instanceof SimpleString) {
+               m.put(entry.getKey().toString(), ((SimpleString) val).toString());
+            } else {
+               m.put(entry.getKey().toString(), val);
+            }
+         }
+         return m;
+      }
    }
 
    /**

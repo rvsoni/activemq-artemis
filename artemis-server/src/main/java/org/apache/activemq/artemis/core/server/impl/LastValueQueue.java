@@ -16,9 +16,12 @@
  */
 package org.apache.activemq.artemis.core.server.impl;
 
+import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Consumer;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.Message;
@@ -47,9 +50,11 @@ import org.apache.activemq.artemis.utils.actors.ArtemisExecutor;
  * This is useful for example, for stock prices, where you're only interested in the latest value
  * for a particular stock
  */
+@SuppressWarnings("ALL")
 public class LastValueQueue extends QueueImpl {
 
    private final Map<SimpleString, HolderReference> map = new ConcurrentHashMap<>();
+   private final SimpleString lastValueKey;
 
    public LastValueQueue(final long persistenceID,
                          final SimpleString address,
@@ -63,7 +68,17 @@ public class LastValueQueue extends QueueImpl {
                          final RoutingType routingType,
                          final Integer maxConsumers,
                          final Boolean exclusive,
+                         final Boolean groupRebalance,
+                         final Integer groupBuckets,
+                         final Integer consumersBeforeDispatch,
+                         final Long delayBeforeDispatch,
                          final Boolean purgeOnNoConsumers,
+                         final SimpleString lastValueKey,
+                         final Boolean nonDestructive,
+                         final Boolean autoDelete,
+                         final Long autoDeleteDelay,
+                         final Long autoDeleteMessageCount,
+                         final boolean configurationManaged,
                          final ScheduledExecutorService scheduledExecutor,
                          final PostOffice postOffice,
                          final StorageManager storageManager,
@@ -71,7 +86,8 @@ public class LastValueQueue extends QueueImpl {
                          final ArtemisExecutor executor,
                          final ActiveMQServer server,
                          final QueueFactory factory) {
-      super(persistenceID, address, name, filter, pageSubscription, user, durable, temporary, autoCreated, routingType, maxConsumers, exclusive, purgeOnNoConsumers, scheduledExecutor, postOffice, storageManager, addressSettingsRepository, executor, server, factory);
+      super(persistenceID, address, name, filter, pageSubscription, user, durable, temporary, autoCreated, routingType, maxConsumers, exclusive, groupRebalance, groupBuckets, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, purgeOnNoConsumers, autoDelete, autoDeleteDelay, autoDeleteMessageCount, configurationManaged, scheduledExecutor, postOffice, storageManager, addressSettingsRepository, executor, server, factory);
+      this.lastValueKey = lastValueKey;
    }
 
    @Override
@@ -79,8 +95,7 @@ public class LastValueQueue extends QueueImpl {
       if (scheduleIfPossible(ref)) {
          return;
       }
-
-      SimpleString prop = ref.getMessage().getLastValueProperty();
+      final SimpleString prop = ref.getLastValueProperty();
 
       if (prop != null) {
          HolderReference hr = map.get(prop);
@@ -105,7 +120,7 @@ public class LastValueQueue extends QueueImpl {
    @Override
    public synchronized void addHead(final MessageReference ref, boolean scheduling) {
 
-      SimpleString lastValueProp = ref.getMessage().getLastValueProperty();
+      SimpleString lastValueProp = ref.getLastValueProperty();
 
       if (lastValueProp != null) {
          HolderReference hr = map.get(lastValueProp);
@@ -138,13 +153,18 @@ public class LastValueQueue extends QueueImpl {
       }
    }
 
+   @Override
+   public boolean allowsReferenceCallback() {
+      return false;
+   }
+
    private void replaceLVQMessage(MessageReference ref, HolderReference hr) {
       MessageReference oldRef = hr.getReference();
 
       referenceHandled(ref);
 
       try {
-         oldRef.acknowledge();
+         oldRef.acknowledge(null, AckReason.REPLACED, null);
       } catch (Exception e) {
          ActiveMQServerLogger.LOGGER.errorAckingOldReference(e);
       }
@@ -154,23 +174,60 @@ public class LastValueQueue extends QueueImpl {
 
    @Override
    protected void refRemoved(MessageReference ref) {
-      synchronized (this) {
-         SimpleString prop = ref.getMessage().getLastValueProperty();
-
-         if (prop != null) {
-            map.remove(prop);
-         }
+      if (isNonDestructive()) {
+         removeIfCurrent(ref);
       }
-
       super.refRemoved(ref);
    }
+
+   @Override
+   public void acknowledge(final MessageReference ref, final AckReason reason, final ServerConsumer consumer) throws Exception {
+      if (isNonDestructive() && reason == AckReason.EXPIRED || reason == AckReason.KILLED ) {
+         removeIfCurrent(ref);
+      }
+      super.acknowledge(ref, reason, consumer);
+   }
+
+   private synchronized void removeIfCurrent(MessageReference ref) {
+      SimpleString lastValueProp = ref.getLastValueProperty();
+      if (lastValueProp != null) {
+         MessageReference current = map.get(lastValueProp);
+         if (current == ref) {
+            map.remove(lastValueProp);
+         }
+      }
+   }
+
+   @Override
+   QueueIterateAction createDeleteMatchingAction(AckReason ackReason) {
+      QueueIterateAction queueIterateAction = super.createDeleteMatchingAction(ackReason);
+      return new QueueIterateAction() {
+         @Override
+         public void actMessage(Transaction tx, MessageReference ref) throws Exception {
+            removeIfCurrent(ref);
+            queueIterateAction.actMessage(tx, ref);
+         }
+      };
+   }
+
+
+
 
    @Override
    public boolean isLastValue() {
       return true;
    }
 
-   private class HolderReference implements MessageReference {
+   @Override
+   public SimpleString getLastValueKey() {
+      return lastValueKey;
+   }
+
+   public synchronized Set<SimpleString> getLastValueKeys() {
+      return Collections.unmodifiableSet(map.keySet());
+   }
+
+   private static class HolderReference implements MessageReference {
 
       private final SimpleString prop;
 
@@ -186,15 +243,22 @@ public class LastValueQueue extends QueueImpl {
          this.ref = ref;
       }
 
+      @Override
+      public void onDelivery(Consumer<? super MessageReference> callback) {
+         // HolderReference may be reused among different consumers, so we don't set a callback and won't support Runnables
+      }
+
       MessageReference getReference() {
          return ref;
       }
 
       @Override
       public void handled() {
-         ref.handled();
          // We need to remove the entry from the map just before it gets delivered
-         map.remove(prop);
+         ref.handled();
+         if (!ref.getQueue().isNonDestructive()) {
+            ((LastValueQueue) ref.getQueue()).removeIfCurrent(this);
+         }
       }
 
       @Override
@@ -243,7 +307,17 @@ public class LastValueQueue extends QueueImpl {
 
       @Override
       public long getMessageID() {
-         return getMessage().getMessageID();
+         return ref.getMessageID();
+      }
+
+      @Override
+      public boolean isDurable() {
+         return getMessage().isDurable();
+      }
+
+      @Override
+      public SimpleString getLastValueProperty() {
+         return prop;
       }
 
       @Override

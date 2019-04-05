@@ -108,12 +108,14 @@ public class JDBCSequentialFileFactoryDriver extends AbstractJDBCDriver {
     * @throws SQLException
     */
    public void openFile(JDBCSequentialFile file) throws SQLException {
-      final long fileId = fileExists(file);
-      if (fileId < 0) {
-         createFile(file);
-      } else {
-         file.setId(fileId);
-         loadFile(file);
+      synchronized (connection) {
+         final long fileId = fileExists(file);
+         if (fileId < 0) {
+            createFile(file);
+         } else {
+            file.setId(fileId);
+            loadFile(file);
+         }
       }
    }
 
@@ -244,6 +246,10 @@ public class JDBCSequentialFileFactoryDriver extends AbstractJDBCDriver {
       }
    }
 
+   public int writeToFile(JDBCSequentialFile file, byte[] data) throws SQLException {
+      return writeToFile(file, data, true);
+   }
+
    /**
     * Persists data to this files associated database mapping.
     *
@@ -252,7 +258,7 @@ public class JDBCSequentialFileFactoryDriver extends AbstractJDBCDriver {
     * @return
     * @throws SQLException
     */
-   public int writeToFile(JDBCSequentialFile file, byte[] data) throws SQLException {
+   public int writeToFile(JDBCSequentialFile file, byte[] data, boolean append) throws SQLException {
       synchronized (connection) {
          connection.setAutoCommit(false);
          appendToLargeObject.setLong(1, file.getId());
@@ -264,7 +270,12 @@ public class JDBCSequentialFileFactoryDriver extends AbstractJDBCDriver {
                if (blob == null) {
                   blob = connection.createBlob();
                }
-               bytesWritten = blob.setBytes(blob.length() + 1, data);
+               if (append) {
+                  bytesWritten = blob.setBytes(blob.length() + 1, data);
+               } else {
+                  blob.truncate(0);
+                  bytesWritten = blob.setBytes(1, data);
+               }
                rs.updateBlob(1, blob);
                rs.updateRow();
             }

@@ -29,6 +29,11 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
+import org.apache.activemq.artemis.core.journal.impl.JournalImpl;
+import org.apache.activemq.artemis.core.server.impl.ActiveMQServerImpl;
+import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBasePlugin;
+import org.apache.activemq.artemis.utils.RandomUtil;
 import org.apache.activemq.artemis.utils.critical.CriticalAnalyzerPolicy;
 import org.apache.activemq.artemis.api.core.BroadcastGroupConfiguration;
 import org.apache.activemq.artemis.api.core.DiscoveryGroupConfiguration;
@@ -89,6 +94,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       Assert.assertEquals(56789, conf.getTransactionTimeoutScanPeriod());
       Assert.assertEquals(10111213, conf.getMessageExpiryScanPeriod());
       Assert.assertEquals(8, conf.getMessageExpiryThreadPriority());
+      Assert.assertEquals(25000, conf.getAddressQueueScanPeriod());
       Assert.assertEquals(127, conf.getIDCacheSize());
       Assert.assertEquals(true, conf.isPersistIDCache());
       Assert.assertEquals(true, conf.isPersistDeliveryCountBeforeDelivery());
@@ -241,6 +247,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
             Assert.assertEquals(null, bc.getDiscoveryGroupName());
             Assert.assertEquals(444, bc.getProducerWindowSize());
             Assert.assertEquals(1073741824, bc.getConfirmationWindowSize());
+            Assert.assertEquals(ComponentConfigurationRoutingType.STRIP, bc.getRoutingType());
          } else if (bc.getName().equals("bridge2")) {
             Assert.assertEquals("bridge2", bc.getName());
             Assert.assertEquals("queue2", bc.getQueueName());
@@ -250,6 +257,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
             Assert.assertEquals(null, bc.getStaticConnectors());
             Assert.assertEquals("dg1", bc.getDiscoveryGroupName());
             Assert.assertEquals(568320, bc.getProducerWindowSize());
+            Assert.assertEquals(ComponentConfigurationRoutingType.PASS, bc.getRoutingType());
          } else {
             Assert.assertEquals("bridge3", bc.getName());
             Assert.assertEquals("org.foo.BridgeTransformer3", bc.getTransformerConfiguration().getClassName());
@@ -323,6 +331,8 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals(true, conf.getAddressesSettings().get("a1").isAutoDeleteJmsQueues());
       assertEquals(true, conf.getAddressesSettings().get("a1").isAutoCreateJmsTopics());
       assertEquals(true, conf.getAddressesSettings().get("a1").isAutoDeleteJmsTopics());
+      assertEquals(0, conf.getAddressesSettings().get("a1").getAutoDeleteQueuesDelay());
+      assertEquals(0, conf.getAddressesSettings().get("a1").getAutoDeleteAddressesDelay());
       assertEquals(false, conf.getAddressesSettings().get("a1").isDefaultPurgeOnNoConsumers());
       assertEquals(5, conf.getAddressesSettings().get("a1").getDefaultMaxConsumers());
       assertEquals(RoutingType.ANYCAST, conf.getAddressesSettings().get("a1").getDefaultQueueRoutingType());
@@ -342,10 +352,13 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals(false, conf.getAddressesSettings().get("a2").isAutoDeleteJmsQueues());
       assertEquals(false, conf.getAddressesSettings().get("a2").isAutoCreateJmsTopics());
       assertEquals(false, conf.getAddressesSettings().get("a2").isAutoDeleteJmsTopics());
+      assertEquals(500, conf.getAddressesSettings().get("a2").getAutoDeleteQueuesDelay());
+      assertEquals(1000, conf.getAddressesSettings().get("a2").getAutoDeleteAddressesDelay());
       assertEquals(true, conf.getAddressesSettings().get("a2").isDefaultPurgeOnNoConsumers());
       assertEquals(15, conf.getAddressesSettings().get("a2").getDefaultMaxConsumers());
       assertEquals(RoutingType.MULTICAST, conf.getAddressesSettings().get("a2").getDefaultQueueRoutingType());
       assertEquals(RoutingType.ANYCAST, conf.getAddressesSettings().get("a2").getDefaultAddressRoutingType());
+      assertEquals(10000, conf.getAddressesSettings().get("a2").getDefaultConsumerWindowSize());
 
       assertTrue(conf.getResourceLimitSettings().containsKey("myUser"));
       assertEquals(104, conf.getResourceLimitSettings().get("myUser").getMaxConnections());
@@ -423,7 +436,8 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals("color='blue'", queueConfiguration.getFilterString());
       assertEquals(ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers(), queueConfiguration.getPurgeOnNoConsumers());
       assertEquals("addr1", queueConfiguration.getAddress());
-      assertEquals(ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers(), queueConfiguration.getMaxConsumers());
+      // If null, then default will be taken from address-settings (which defaults to ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers())
+      assertEquals(null, queueConfiguration.getMaxConsumers());
 
       // Addr 1 Queue 2
       queueConfiguration = addressConfiguration.getQueueConfigurations().get(1);
@@ -431,7 +445,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals("q2", queueConfiguration.getName());
       assertTrue(queueConfiguration.isDurable());
       assertEquals("color='green'", queueConfiguration.getFilterString());
-      assertEquals(Queue.MAX_CONSUMERS_UNLIMITED, queueConfiguration.getMaxConsumers());
+      assertEquals(Queue.MAX_CONSUMERS_UNLIMITED, queueConfiguration.getMaxConsumers().intValue());
       assertFalse(queueConfiguration.getPurgeOnNoConsumers());
       assertEquals("addr1", queueConfiguration.getAddress());
 
@@ -449,7 +463,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals("q3", queueConfiguration.getName());
       assertTrue(queueConfiguration.isDurable());
       assertEquals("color='red'", queueConfiguration.getFilterString());
-      assertEquals(10, queueConfiguration.getMaxConsumers());
+      assertEquals(10, queueConfiguration.getMaxConsumers().intValue());
       assertEquals(ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers(), queueConfiguration.getPurgeOnNoConsumers());
       assertEquals("addr2", queueConfiguration.getAddress());
 
@@ -459,7 +473,8 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals("q4", queueConfiguration.getName());
       assertTrue(queueConfiguration.isDurable());
       assertNull(queueConfiguration.getFilterString());
-      assertEquals(ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers(), queueConfiguration.getMaxConsumers());
+      // If null, then default will be taken from address-settings (which defaults to ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers())
+      assertEquals(null, queueConfiguration.getMaxConsumers());
       assertTrue(queueConfiguration.getPurgeOnNoConsumers());
       assertEquals("addr2", queueConfiguration.getAddress());
 
@@ -646,7 +661,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       deploymentManager.addDeployable(fc);
       deploymentManager.readConfiguration();
 
-      List<ActiveMQServerPlugin> brokerPlugins = fc.getBrokerPlugins();
+      List<ActiveMQServerBasePlugin> brokerPlugins = fc.getBrokerPlugins();
       assertEquals(2, brokerPlugins.size());
       assertTrue(brokerPlugins.get(0) instanceof EmptyPlugin1);
       assertTrue(brokerPlugins.get(1) instanceof EmptyPlugin2);
@@ -661,10 +676,49 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertTrue("check failed, " + defaultConfirmationWinSize + ":" + defaultIdCacheSize, ConfigurationImpl.checkoutDupCacheSize(defaultConfirmationWinSize, defaultIdCacheSize));
    }
 
+   @Test
+   public void testJournalFileOpenTimeoutDefaultValue() throws Exception {
+      ActiveMQServerImpl server = new ActiveMQServerImpl();
+      try {
+         server.start();
+         JournalImpl journal = (JournalImpl) server.getStorageManager().getBindingsJournal();
+         Assert.assertEquals(ActiveMQDefaultConfiguration.getDefaultJournalFileOpenTimeout(), journal.getFilesRepository().getJournalFileOpenTimeout());
+         Assert.assertEquals(ActiveMQDefaultConfiguration.getDefaultJournalFileOpenTimeout(), server.getConfiguration().getJournalFileOpenTimeout());
+      } finally {
+         server.stop();
+      }
+   }
+
+   @Test
+   public void testJournalFileOpenTimeoutValue() throws Exception {
+      int timeout = RandomUtil.randomPositiveInt();
+      Configuration configuration = createConfiguration("shared-store-master-hapolicy-config.xml");
+      configuration.setJournalFileOpenTimeout(timeout);
+      ActiveMQServerImpl server = new ActiveMQServerImpl(configuration);
+      try {
+         server.start();
+         JournalImpl journal = (JournalImpl) server.getStorageManager().getBindingsJournal();
+         Assert.assertEquals(timeout, journal.getFilesRepository().getJournalFileOpenTimeout());
+         Assert.assertEquals(timeout, server.getConfiguration().getJournalFileOpenTimeout());
+      } finally {
+         server.stop();
+      }
+   }
+
    @Override
    protected Configuration createConfiguration() throws Exception {
+      // This may be set for the entire testsuite, but on this test we need this out
+      System.clearProperty("brokerconfig.maxDiskUsage");
       FileConfiguration fc = new FileConfiguration();
       FileDeploymentManager deploymentManager = new FileDeploymentManager(getConfigurationName());
+      deploymentManager.addDeployable(fc);
+      deploymentManager.readConfiguration();
+      return fc;
+   }
+
+   private Configuration createConfiguration(String filename) throws Exception {
+      FileConfiguration fc = new FileConfiguration();
+      FileDeploymentManager deploymentManager = new FileDeploymentManager(filename);
       deploymentManager.addDeployable(fc);
       deploymentManager.readConfiguration();
       return fc;

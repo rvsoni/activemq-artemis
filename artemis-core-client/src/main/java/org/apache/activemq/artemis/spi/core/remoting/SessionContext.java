@@ -26,6 +26,7 @@ import java.util.concurrent.Executor;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.QueueAttributes;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.api.core.client.ClientConsumer;
@@ -36,6 +37,7 @@ import org.apache.activemq.artemis.core.client.impl.ClientLargeMessageInternal;
 import org.apache.activemq.artemis.core.client.impl.ClientMessageInternal;
 import org.apache.activemq.artemis.core.client.impl.ClientProducerCredits;
 import org.apache.activemq.artemis.core.client.impl.ClientSessionInternal;
+import org.apache.activemq.artemis.core.protocol.core.impl.wireformat.SessionQueueQueryResponseMessage;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.utils.IDGenerator;
 import org.apache.activemq.artemis.utils.SimpleIDGenerator;
@@ -185,6 +187,19 @@ public abstract class SessionContext {
                                           Boolean exclusive,
                                           Boolean lastValue) throws ActiveMQException;
 
+   /**
+    * Creates a shared queue using the routing type set by the Address.  If the Address supports more than one type of delivery
+    * then the default delivery mode (MULTICAST) is used.
+    *
+    * @param address
+    * @param queueName
+    * @param queueAttributes
+    * @throws ActiveMQException
+    */
+   public abstract void createSharedQueue(SimpleString address,
+                                          SimpleString queueName,
+                                          QueueAttributes queueAttributes) throws ActiveMQException;
+
    public abstract void createSharedQueue(SimpleString address,
                                           SimpleString queueName,
                                           RoutingType routingType,
@@ -233,6 +248,12 @@ public abstract class SessionContext {
                                     boolean autoCreated,
                                     Boolean exclusive,
                                     Boolean lastVale) throws ActiveMQException;
+
+   public abstract void createQueue(SimpleString address,
+                                    SimpleString queueName,
+                                    boolean temp,
+                                    boolean autoCreated,
+                                    QueueAttributes queueAttributes) throws ActiveMQException;
 
    public abstract ClientSession.QueueQuery queueQuery(SimpleString queueName) throws ActiveMQException;
 
@@ -293,6 +314,7 @@ public abstract class SessionContext {
 
    public abstract ClientConsumerInternal createConsumer(SimpleString queueName,
                                                          SimpleString filterString,
+                                                         int priority,
                                                          int windowSize,
                                                          int maxRate,
                                                          int ackBatchSize,
@@ -324,6 +346,8 @@ public abstract class SessionContext {
    public abstract void restartSession() throws ActiveMQException;
 
    public abstract void resetMetadata(HashMap<String, String> metaDataToSend);
+
+   public abstract int getDefaultConsumerWindowSize(SessionQueueQueryResponseMessage response) throws ActiveMQException;
 
    // Failover utility classes
 

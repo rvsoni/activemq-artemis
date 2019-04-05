@@ -48,6 +48,7 @@ import org.apache.activemq.artemis.api.core.UDPBroadcastEndpointFactory;
 import org.apache.activemq.artemis.api.core.client.ActiveMQClient;
 import org.apache.activemq.artemis.api.core.client.ClientSessionFactory;
 import org.apache.activemq.artemis.api.core.client.ServerLocator;
+import org.apache.activemq.artemis.api.jms.ActiveMQJMSClient;
 import org.apache.activemq.artemis.api.jms.ActiveMQJMSConstants;
 import org.apache.activemq.artemis.api.jms.JMSFactoryType;
 import org.apache.activemq.artemis.core.client.impl.ServerLocatorImpl;
@@ -70,6 +71,8 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
 
    private String clientID;
 
+   private boolean enableSharedClientID = ActiveMQClient.DEFAULT_ENABLED_SHARED_CLIENT_ID;
+
    private int dupsOKBatchSize = ActiveMQClient.DEFAULT_ACK_BATCH_SIZE;
 
    private int transactionBatchSize = ActiveMQClient.DEFAULT_ACK_BATCH_SIZE;
@@ -91,6 +94,8 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
    private boolean finalizeChecks;
 
    private boolean ignoreJTA;
+
+   private boolean enable1xPrefixes = ActiveMQJMSClient.DEFAULT_ENABLE_1X_PREFIXES;
 
    @Override
    public void writeExternal(ObjectOutput out) throws IOException {
@@ -147,7 +152,7 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
          AccessController.doPrivileged(new PrivilegedAction<Object>() {
             @Override
             public Object run() {
-               ClientProtocolManagerFactory protocolManagerFactory = (ClientProtocolManagerFactory) ClassloadingUtil.newInstanceFromClassLoader(protocolManagerFactoryStr);
+               ClientProtocolManagerFactory protocolManagerFactory = (ClientProtocolManagerFactory) ClassloadingUtil.newInstanceFromClassLoader(ActiveMQConnectionFactory.class, protocolManagerFactoryStr);
                serverLocator.setProtocolManagerFactory(protocolManagerFactory);
                return null;
             }
@@ -450,6 +455,14 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
       this.clientID = clientID;
    }
 
+   public boolean isEnableSharedClientID() {
+      return enableSharedClientID;
+   }
+
+   public void setEnableSharedClientID(boolean enableSharedClientID) {
+      this.enableSharedClientID = enableSharedClientID;
+   }
+
    public synchronized int getDupsOKBatchSize() {
       return dupsOKBatchSize;
    }
@@ -475,6 +488,15 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
    public synchronized void setCacheDestinations(final boolean cacheDestinations) {
       checkWrite();
       this.cacheDestinations = cacheDestinations;
+   }
+
+   public synchronized boolean isEnable1xPrefixes() {
+      return this.enable1xPrefixes;
+   }
+
+   public synchronized void setEnable1xPrefixes(final boolean enable1xPrefixes) {
+      checkWrite();
+      this.enable1xPrefixes = enable1xPrefixes;
    }
 
    public synchronized long getClientFailureCheckPeriod() {
@@ -511,6 +533,15 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
    public synchronized void setCallFailoverTimeout(final long callTimeout) {
       checkWrite();
       serverLocator.setCallFailoverTimeout(callTimeout);
+   }
+
+   public synchronized void setUseTopologyForLoadBalancing(boolean useTopologyForLoadBalancing) {
+      checkWrite();
+      serverLocator.setUseTopologyForLoadBalancing(useTopologyForLoadBalancing);
+   }
+
+   public synchronized boolean isUseTopologyForLoadBalancing() {
+      return serverLocator.getUseTopologyForLoadBalancing();
    }
 
    public synchronized int getConsumerWindowSize() {
@@ -824,19 +855,19 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
 
       if (isXA) {
          if (type == ActiveMQConnection.TYPE_GENERIC_CONNECTION) {
-            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          } else if (type == ActiveMQConnection.TYPE_QUEUE_CONNECTION) {
-            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          } else if (type == ActiveMQConnection.TYPE_TOPIC_CONNECTION) {
-            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQXAConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          }
       } else {
          if (type == ActiveMQConnection.TYPE_GENERIC_CONNECTION) {
-            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          } else if (type == ActiveMQConnection.TYPE_QUEUE_CONNECTION) {
-            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          } else if (type == ActiveMQConnection.TYPE_TOPIC_CONNECTION) {
-            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, factory);
+            connection = new ActiveMQConnection(this, username, password, type, clientID, dupsOKBatchSize, transactionBatchSize, cacheDestinations, enable1xPrefixes, factory);
          }
       }
 
@@ -846,7 +877,7 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
       connection.setReference(this);
 
       try {
-         connection.authorize();
+         connection.authorize(!isEnableSharedClientID());
       } catch (JMSException e) {
          try {
             connection.close();
@@ -871,6 +902,8 @@ public class ActiveMQConnectionFactory extends JNDIStorable implements Connectio
          transactionBatchSize +
          ", readOnly=" +
          readOnly +
+         "EnableSharedClientID=" +
+         enableSharedClientID +
          "]";
    }
 

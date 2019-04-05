@@ -225,6 +225,12 @@ public interface QueueControl {
    /**
     *
     */
+   @Attribute(desc = "is this queue managed by configuration (broker.xml)")
+   boolean isConfigurationManaged();
+
+   /**
+    *
+    */
    @Attribute(desc = "If the queue should route exclusively to one consumer")
    boolean isExclusive();
 
@@ -295,6 +301,32 @@ public interface QueueControl {
 
    @Operation(desc = "Returns the number of the messages in the queue", impact = MBeanOperationInfo.INFO)
    long countMessages() throws Exception;
+
+   /**
+    * Counts the number of messages in this queue matching the specified filter, grouped by the given property field.
+    * In case of null property will be grouped in "null"
+    * <br>
+    * Using {@code null} or an empty filter will count <em>all</em> messages from this queue.
+    */
+   @Operation(desc = "Returns the number of the messages in the queue matching the given filter, grouped by the given property field", impact = MBeanOperationInfo.INFO)
+   String countMessages(@Parameter(name = "filter", desc = "This filter separate account messages") String filter, @Parameter(name = "groupByProperty", desc = "This property to group by") String groupByProperty) throws Exception;
+
+   /**
+    * Counts the number of delivering messages in this queue matching the specified filter.
+    * <br>
+    * Using {@code null} or an empty filter will count <em>all</em> messages from this queue.
+    */
+   @Operation(desc = "Returns the number of the messages in the queue matching the given filter")
+   long countDeliveringMessages(@Parameter(name = "filter", desc = "A message filter (can be empty)") String filter) throws Exception;
+
+   /**
+    * Counts the number of delivering messages in this queue matching the specified filter, grouped by the given property field.
+    * In case of null property will be grouped in "null"
+    * <br>
+    * Using {@code null} or an empty filter will count <em>all</em> messages from this queue.
+    */
+   @Operation(desc = "Returns the number of the messages in the queue matching the given filter, grouped by the given property field")
+   String countDeliveringMessages(@Parameter(name = "filter", desc = "This filter separate account messages") String filter, @Parameter(name = "groupByProperty", desc = "This property to group by") String groupByProperty) throws Exception;
 
    /**
     * Removes the message corresponding to the specified message ID.

@@ -49,7 +49,27 @@ public class QueueQueryResult {
 
    private Boolean exclusive;
 
+   private Boolean groupRebalance;
+
+   private Integer groupBuckets;
+
    private Boolean lastValue;
+
+   private SimpleString lastValueKey;
+
+   private Boolean nonDestructive;
+
+   private Integer consumersBeforeDispatch;
+
+   private Long delayBeforeDispatch;
+
+   private Boolean autoDelete;
+
+   private Long autoDeleteDelay;
+
+   private Long autoDeleteMessageCount;
+
+   private Integer defaultConsumerWindowSize;
 
    public QueueQueryResult(final SimpleString name,
                            final SimpleString address,
@@ -65,7 +85,17 @@ public class QueueQueryResult {
                            final RoutingType routingType,
                            final int maxConsumers,
                            final Boolean exclusive,
-                           final Boolean lastValue) {
+                           final Boolean groupRebalance,
+                           final Integer groupBuckets,
+                           final Boolean lastValue,
+                           final SimpleString lastValueKey,
+                           final Boolean nonDestructive,
+                           final Integer consumersBeforeDispatch,
+                           final Long delayBeforeDispatch,
+                           final Boolean autoDelete,
+                           final Long autoDeleteDelay,
+                           final Long autoDeleteMessageCount,
+                           final Integer defaultConsumerWindowSize) {
       this.durable = durable;
 
       this.temporary = temporary;
@@ -94,7 +124,27 @@ public class QueueQueryResult {
 
       this.exclusive = exclusive;
 
+      this.groupRebalance = groupRebalance;
+
+      this.groupBuckets = groupBuckets;
+
       this.lastValue = lastValue;
+
+      this.lastValueKey = lastValueKey;
+
+      this.nonDestructive = nonDestructive;
+
+      this.consumersBeforeDispatch = consumersBeforeDispatch;
+
+      this.delayBeforeDispatch = delayBeforeDispatch;
+
+      this.autoDelete = autoDelete;
+
+      this.autoDeleteDelay = autoDeleteDelay;
+
+      this.autoDeleteMessageCount = autoDeleteMessageCount;
+
+      this.defaultConsumerWindowSize = defaultConsumerWindowSize;
    }
 
    public boolean isExists() {
@@ -159,5 +209,45 @@ public class QueueQueryResult {
 
    public Boolean isLastValue() {
       return lastValue;
+   }
+
+   public SimpleString getLastValueKey() {
+      return lastValueKey;
+   }
+
+   public Boolean isNonDestructive() {
+      return nonDestructive;
+   }
+
+   public Integer getConsumersBeforeDispatch() {
+      return consumersBeforeDispatch;
+   }
+
+   public Long getDelayBeforeDispatch() {
+      return delayBeforeDispatch;
+   }
+
+   public Integer getDefaultConsumerWindowSize() {
+      return defaultConsumerWindowSize;
+   }
+
+   public Boolean isGroupRebalance() {
+      return groupRebalance;
+   }
+
+   public Integer getGroupBuckets() {
+      return groupBuckets;
+   }
+
+   public Boolean isAutoDelete() {
+      return autoDelete;
+   }
+
+   public Long getAutoDeleteDelay() {
+      return autoDeleteDelay;
+   }
+
+   public Long getAutoDeleteMessageCount() {
+      return autoDeleteMessageCount;
    }
 }

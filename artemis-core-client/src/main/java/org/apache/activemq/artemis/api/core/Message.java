@@ -113,6 +113,8 @@ public interface Message {
     */
    SimpleString HDR_GROUP_ID = new SimpleString("_AMQ_GROUP_ID");
 
+   SimpleString HDR_GROUP_SEQUENCE = new SimpleString("_AMQ_GROUP_SEQUENCE");
+
    /**
     * to determine if the Large Message was compressed.
     */
@@ -174,7 +176,7 @@ public interface Message {
    /** The message will contain another message persisted through {@link org.apache.activemq.artemis.spi.core.protocol.EmbedMessageUtil}*/
    byte EMBEDDED_TYPE = 7;
 
-   default void cleanupInternalProperties() {
+   default void clearInternalProperties() {
       // only on core
    }
 
@@ -246,6 +248,31 @@ public interface Message {
 
    default SimpleString getGroupID() {
       return null;
+   }
+
+   default Message setGroupID(SimpleString groupID) {
+      return this;
+   }
+
+   default Message setGroupID(String groupID) {
+      return this;
+   }
+
+   default int getGroupSequence() {
+      return 0;
+   }
+
+   default Message setGroupSequence(int sequence) {
+      return this;
+   }
+
+   default Object getCorrelationID() {
+      return null;
+   }
+
+   default Message setCorrelationID(Object correlationID) {
+
+      return this;
    }
 
    SimpleString getReplyTo();

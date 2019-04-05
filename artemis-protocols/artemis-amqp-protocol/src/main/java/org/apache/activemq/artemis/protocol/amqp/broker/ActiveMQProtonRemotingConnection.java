@@ -50,6 +50,7 @@ public class ActiveMQProtonRemotingConnection extends AbstractRemotingConnection
       super(transportConnection, executor);
       this.manager = manager;
       this.amqpConnection = amqpConnection;
+      transportConnection.setProtocolConnection(this);
    }
 
    public Executor getExecutor() {
@@ -121,7 +122,8 @@ public class ActiveMQProtonRemotingConnection extends AbstractRemotingConnection
       ErrorCondition errorCondition = new ErrorCondition();
       errorCondition.setCondition(AmqpSupport.CONNECTION_FORCED);
       amqpConnection.close(errorCondition);
-      getTransportConnection().close();
+      // There's no need to flush, amqpConnection.close() is calling flush
+      // as long this semantic is kept no need to flush here
    }
 
    /**

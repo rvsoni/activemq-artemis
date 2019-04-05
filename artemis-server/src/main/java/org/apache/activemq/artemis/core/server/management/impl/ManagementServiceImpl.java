@@ -16,6 +16,8 @@
  */
 package org.apache.activemq.artemis.core.server.management.impl;
 
+import static org.apache.activemq.artemis.api.core.FilterConstants.NATIVE_MESSAGE_ID;
+
 import javax.management.InstanceNotFoundException;
 import javax.management.MBeanRegistrationException;
 import javax.management.MBeanServer;
@@ -216,7 +218,7 @@ public class ManagementServiceImpl implements ManagementService {
    @Override
    public void registerAddress(AddressInfo addressInfo) throws Exception {
       ObjectName objectName = objectNameBuilder.getAddressObjectName(addressInfo.getName());
-      AddressControlImpl addressControl = new AddressControlImpl(addressInfo, postOffice, pagingManager, storageManager, securityRepository, securityStore, this);
+      AddressControlImpl addressControl = new AddressControlImpl(addressInfo, messagingServer, pagingManager, storageManager, securityRepository, securityStore, this);
 
       registerInJMX(objectName, addressControl);
 
@@ -246,9 +248,9 @@ public class ManagementServiceImpl implements ManagementService {
          return;
       }
 
-      QueueControlImpl queueControl = new QueueControlImpl(queue, addressInfo.getName().toString(), postOffice, storageManager, securityStore, addressSettingsRepository);
+      QueueControlImpl queueControl = new QueueControlImpl(queue, addressInfo.getName().toString(), messagingServer, storageManager, securityStore, addressSettingsRepository);
       if (messageCounterManager != null) {
-         MessageCounter counter = new MessageCounter(queue.getName().toString(), null, queue, false, queue.isDurableMessage(), messageCounterManager.getMaxDayCount());
+         MessageCounter counter = new MessageCounter(queue.getName().toString(), null, queue, false, queue.isDurable(), messageCounterManager.getMaxDayCount());
          queueControl.setMessageCounter(counter);
          messageCounterManager.registerMessageCounter(queue.getName().toString(), counter);
       }
@@ -389,6 +391,11 @@ public class ManagementServiceImpl implements ManagementService {
       CoreMessage reply = new CoreMessage(storageManager.generateID(), 512);
       reply.setType(Message.TEXT_TYPE);
       reply.setReplyTo(message.getReplyTo());
+
+      Object correlationID = getCorrelationIdentity(message);
+      if (correlationID != null) {
+         reply.setCorrelationID(correlationID);
+      }
 
       String resourceName = message.getStringProperty(ManagementHelper.HDR_RESOURCE_NAME);
       if (logger.isDebugEnabled()) {
@@ -550,7 +557,10 @@ public class ManagementServiceImpl implements ManagementService {
          @Override
          public void activated() {
             try {
-               messagingServer.addAddressInfo(new AddressInfo(managementNotificationAddress, RoutingType.MULTICAST));
+               ActiveMQServer usedServer = messagingServer;
+               if (usedServer != null) {
+                  usedServer.addAddressInfo(new AddressInfo(managementNotificationAddress, RoutingType.MULTICAST));
+               }
             } catch (Exception e) {
                ActiveMQServerLogger.LOGGER.unableToCreateManagementNotificationAddress(managementNotificationAddress, e);
             }
@@ -676,9 +686,7 @@ public class ManagementServiceImpl implements ManagementService {
 
                if (notification.getProperties() != null) {
                   TypedProperties props = notification.getProperties();
-                  for (SimpleString name : notification.getProperties().getPropertyNames()) {
-                     notificationMessage.putObjectProperty(name, props.getProperty(name));
-                  }
+                  props.forEach(notificationMessage::putObjectProperty);
                }
 
                notificationMessage.putStringProperty(ManagementHelper.HDR_NOTIFICATION_TYPE, new SimpleString(notification.getType().toString()));
@@ -778,6 +786,25 @@ public class ManagementServiceImpl implements ManagementService {
 
       Object result = method.invoke(resource, params);
       return result;
+   }
+
+   /**
+    * Correlate management responses using the Correlation ID Pattern, if the request supplied a correlation id,
+    * or fallback to the Message ID Pattern providing the request had a message id.
+
+    * @param request
+    * @return correlation identify
+    */
+   private Object getCorrelationIdentity(final Message request) {
+      Object correlationId = request.getCorrelationID();
+      if (correlationId == null) {
+         // CoreMessage#getUserId returns UUID, so to implement this part a alternative API that returned object. This part of the
+         // change is a nice to have for my point of view. I suggested it for completeness.  The application could
+         // always supply unique correl ids on the request and achieve the same effect.  I'd be happy to drop this part.
+         Object underlying = request.getUserID() != null ? request.getUserID() : request.getStringProperty(NATIVE_MESSAGE_ID);
+         correlationId = underlying == null ? null : String.valueOf(underlying);
+      }
+      return correlationId;
    }
 
    // Inner classes -------------------------------------------------

@@ -81,6 +81,114 @@ java.naming.factory.initial=org.apache.activemq.artemis.jndi.ActiveMQInitialCont
 connectionFactory.myConnectionFactory=tcp://localhost:61616?groupID=Group-0
 ```
 
+
+#### Closing a Message Group
+You generally don't need to close a message group, you just keep using it. 
+
+However if you really do want to close a group you can add a negative sequence number.
+
+Example:
+```java
+Mesasge message = session.createTextMessage("<foo>hey</foo>");
+message.setStringProperty("JMSXGroupID", "Group-0");
+message.setIntProperty("JMSXGroupSeq", -1);
+...
+producer.send(message);
+```
+
+This then closes the message group so if another message is sent in the future with the same message group ID it will be reassigned to a new consumer.
+
+#### Rebalancing Message Groups
+
+Sometimes after new consumers are added you can find that if you have long lived groups, that they have no groups assigned, and thus are not being utilised, this is because the long lived groups will already be assigned to existing consumers.
+
+It is possibly to rebalance the groups.
+
+***note*** during the split moment of reset, a message to the original associated consumer could be in flight at the same time, a new message for the same group is dispatched to the new associated consumer.
+
+##### Manually 
+
+via the management API or managment console by invoking `resetAllGroups`
+
+##### Automatically
+
+By setting `group-rebalance` to `true` at the queue level, every time a consumer is added it will trigger a rebalance/reset of the groups.
+
+```xml
+<address name="foo.bar">
+   <multicast>
+      <queue name="orders1" group-rebalance="true"/>
+   </multicast>
+</address>
+```
+
+Or on auto-create when using the JMS Client by using address parameters when 
+creating the destination used by the consumer.
+
+```java
+Queue queue = session.createQueue("my.destination.name?group-rebalance=true");
+Topic topic = session.createTopic("my.destination.name?group-rebalance=true");
+```
+
+Also the default for all queues under and address can be defaulted using the 
+`address-setting` configuration:
+
+```xml
+<address-setting match="my.address">
+   <default-group-rebalance>true</default-group-rebalance>
+</address-setting>
+```
+
+
+By default, `default-group-rebalance` is `false` meaning this is disabled/off.
+
+
+#### Group Buckets
+
+For handling groups in a queue with bounded memory allowing better scaling of groups, 
+you can enable group buckets, essentially the group id is hashed into a bucket instead of keeping track of every single group id.
+
+Setting `group-buckets` to `-1` keeps default behaviour which means the queue keeps track of every group but suffers from unbounded memory use.
+
+Setting `group-buckets` to `0` disables grouping (0 buckets), on a queue. This can be useful on a multicast address, 
+where many queues exist but one queue you may not care for ordering and prefer to keep round robin behaviour.
+
+There is a number of ways to set `group-buckets`.
+
+
+```xml
+<address name="foo.bar">
+   <multicast>
+      <queue name="orders1" group-buckets="1024"/>
+   </multicast>
+</address>
+```
+
+Specified on creating a Queue by using the CORE api specifying the parameter 
+`group-buckets` to `20`. 
+
+Or on auto-create when using the JMS Client by using address parameters when 
+creating the destination used by the consumer.
+
+```java
+Queue queue = session.createQueue("my.destination.name?group-buckets=1024");
+Topic topic = session.createTopic("my.destination.name?group-buckets=1024");
+```
+
+Also the default for all queues under and address can be defaulted using the 
+`address-setting` configuration:
+
+```xml
+<address-setting match="my.bucket.address">
+   <default-group-buckets>1024</default-group-buckets>
+</address-setting>
+```
+
+By default, `default-group-buckets` is `-1` this is to keep compatibility with existing default behaviour. 
+
+Address [wildcards](wildcard-syntax.md) can be used to configure group-buckets for a 
+set of addresses.
+
 ## Example
 
 See the [Message Group Example](examples.md#message-group) which shows how

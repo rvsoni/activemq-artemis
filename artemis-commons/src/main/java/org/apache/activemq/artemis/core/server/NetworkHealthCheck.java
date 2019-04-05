@@ -60,6 +60,8 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
    // To be used on tests. As we use the loopback as a valid address on tests.
    private boolean ignoreLoopback = false;
 
+   private boolean ownShutdown = false;
+
    /**
     * The timeout to be used on isReachable
     */
@@ -84,7 +86,7 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
             netToUse = null;
          }
       } catch (Exception e) {
-         ActiveMQUtilLogger.LOGGER.failedToSetNIC(e, nicName == null ? " " : nicName);
+         ActiveMQUtilLogger.LOGGER.failedToSetNIC(e, nicName);
          netToUse = null;
       }
 
@@ -174,13 +176,13 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
    }
 
    @Override
-   public NetworkHealthCheck setPeriod(long period) {
+   public synchronized NetworkHealthCheck setPeriod(long period) {
       super.setPeriod(period);
       return this;
    }
 
    @Override
-   public NetworkHealthCheck setTimeUnit(TimeUnit timeUnit) {
+   public synchronized NetworkHealthCheck setTimeUnit(TimeUnit timeUnit) {
       super.setTimeUnit(timeUnit);
       return this;
    }
@@ -274,7 +276,7 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
 
       if (healthy) {
          for (ActiveMQComponent component : componentList) {
-            if (!component.isStarted()) {
+            if (!component.isStarted() && ownShutdown) {
                try {
                   ActiveMQUtilLogger.LOGGER.startingService(component.toString());
                   component.start();
@@ -282,10 +284,12 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
                   ActiveMQUtilLogger.LOGGER.errorStartingComponent(e, component.toString());
                }
             }
+            ownShutdown = false;
          }
       } else {
          for (ActiveMQComponent component : componentList) {
             if (component.isStarted()) {
+               ownShutdown = true;
                try {
                   ActiveMQUtilLogger.LOGGER.stoppingService(component.toString());
                   component.stop();
@@ -322,6 +326,10 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
    }
 
    public boolean check(InetAddress address) {
+      if (address == null) {
+         return false;
+      }
+
       try {
          if (address.isReachable(networkInterface, 0, networkTimeout)) {
             if (logger.isTraceEnabled()) {
@@ -332,7 +340,7 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
             return purePing(address);
          }
       } catch (Exception e) {
-         ActiveMQUtilLogger.LOGGER.failedToCheckAddress(e, address == null ? " " : address.toString());
+         ActiveMQUtilLogger.LOGGER.failedToCheckAddress(e, address.toString());
          return false;
       }
    }
@@ -388,6 +396,10 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
    }
 
    public boolean check(URL url) {
+      if (url == null) {
+         return false;
+      }
+
       try {
          URLConnection connection = url.openConnection();
          connection.setReadTimeout(networkTimeout);
@@ -395,7 +407,7 @@ public class NetworkHealthCheck extends ActiveMQScheduledComponent {
          is.close();
          return true;
       } catch (Exception e) {
-         ActiveMQUtilLogger.LOGGER.failedToCheckURL(e, url == null ? " " : url.toString());
+         ActiveMQUtilLogger.LOGGER.failedToCheckURL(e, url.toString());
          return false;
       }
    }

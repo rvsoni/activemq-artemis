@@ -31,6 +31,7 @@ import org.apache.activemq.artemis.core.postoffice.Binding;
 import org.apache.activemq.artemis.core.postoffice.BindingType;
 import org.apache.activemq.artemis.core.postoffice.Bindings;
 import org.apache.activemq.artemis.core.postoffice.BindingsFactory;
+import org.apache.activemq.artemis.core.postoffice.QueueBinding;
 import org.apache.activemq.artemis.core.postoffice.impl.WildcardAddressManager;
 import org.apache.activemq.artemis.core.server.Bindable;
 import org.apache.activemq.artemis.core.server.Queue;
@@ -199,7 +200,7 @@ public class WildcardAddressManagerUnitTest extends ActiveMQTestBase {
 
       @Override
       public Bindings createBindings(SimpleString address) throws Exception {
-         return new BindignsFake();
+         return new BindingsFake();
       }
    }
 
@@ -301,7 +302,7 @@ public class WildcardAddressManagerUnitTest extends ActiveMQTestBase {
       }
    }
 
-   class BindignsFake implements Bindings {
+   class BindingsFake implements Bindings {
 
       ArrayList<Binding> bindings = new ArrayList<>();
 
@@ -332,6 +333,10 @@ public class WildcardAddressManagerUnitTest extends ActiveMQTestBase {
 
       @Override
       public void unproposed(SimpleString groupID) {
+      }
+
+      @Override
+      public void updated(QueueBinding binding) {
       }
 
       @Override

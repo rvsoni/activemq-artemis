@@ -152,8 +152,18 @@ public class PostOfficeJournalLoader implements JournalLoader {
             .purgeOnNoConsumers(queueBindingInfo.isPurgeOnNoConsumers())
             .maxConsumers(queueBindingInfo.getMaxConsumers())
             .exclusive(queueBindingInfo.isExclusive())
+            .groupRebalance(queueBindingInfo.isGroupRebalance())
+            .groupBuckets(queueBindingInfo.getGroupBuckets())
             .lastValue(queueBindingInfo.isLastValue())
-            .routingType(RoutingType.getType(queueBindingInfo.getRoutingType()));
+            .lastValueKey(queueBindingInfo.getLastValueKey())
+            .nonDestructive(queueBindingInfo.isNonDestructive())
+            .consumersBeforeDispatch(queueBindingInfo.getConsumersBeforeDispatch())
+            .delayBeforeDispatch(queueBindingInfo.getDelayBeforeDispatch())
+            .autoDelete(queueBindingInfo.isAutoDelete())
+            .autoDeleteDelay(queueBindingInfo.getAutoDeleteDelay())
+            .autoDeleteMessageCount(queueBindingInfo.getAutoDeleteMessageCount())
+            .routingType(RoutingType.getType(queueBindingInfo.getRoutingType()))
+            .configurationManaged((queueBindingInfo.isConfigurationManaged()));
          final Queue queue = queueFactory.createQueueWith(queueConfigBuilder.build());
          queue.setConsumersRefCount(new QueueManagerImpl(((PostOfficeImpl)postOffice).getServer(), queueBindingInfo.getQueueName()));
 
@@ -358,7 +368,7 @@ public class PostOfficeJournalLoader implements JournalLoader {
             // This can't be true!
             assert (perQueue != null);
 
-            if (store.checkPageFileExists(pageId.intValue())) {
+            if (store != null && store.checkPageFileExists(pageId.intValue())) {
                // on this case we need to recalculate the records
                Page pg = store.createPage(pageId.intValue());
                pg.open();

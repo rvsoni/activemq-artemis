@@ -30,6 +30,7 @@ import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.activemq.artemis.jdbc.store.logging.LoggingConnection;
 import org.apache.activemq.artemis.jdbc.store.sql.SQLProvider;
 import org.apache.activemq.artemis.journal.ActiveMQJournalLogger;
 import org.jboss.logging.Logger;
@@ -85,7 +86,11 @@ public abstract class AbstractJDBCDriver {
    }
 
    public AbstractJDBCDriver(Connection connection, SQLProvider sqlProvider) {
-      this.connection = connection;
+      if (logger.isTraceEnabled() && !(connection instanceof LoggingConnection)) {
+         this.connection = new LoggingConnection(connection, logger);
+      } else {
+         this.connection = connection;
+      }
       this.sqlProvider = sqlProvider;
       this.networkTimeoutExecutor = null;
       this.networkTimeoutMillis = -1;
@@ -118,6 +123,11 @@ public abstract class AbstractJDBCDriver {
          if (dataSource != null) {
             try {
                connection = dataSource.getConnection();
+
+               if (logger.isTraceEnabled() && !(connection instanceof LoggingConnection)) {
+                  this.connection = new LoggingConnection(connection, logger);
+               }
+
             } catch (SQLException e) {
                logger.error(JDBCUtils.appendSQLExceptionDetails(new StringBuilder(), e));
                throw e;
@@ -132,6 +142,11 @@ public abstract class AbstractJDBCDriver {
                }
                final Driver dbDriver = getDriver(jdbcDriverClass);
                connection = dbDriver.connect(jdbcConnectionUrl, new Properties());
+
+               if (logger.isTraceEnabled() && !(connection instanceof LoggingConnection)) {
+                  this.connection = new LoggingConnection(connection, logger);
+               }
+
                if (connection == null) {
                   throw new IllegalStateException("the driver: " + jdbcDriverClass + " isn't able to connect to the requested url: " + jdbcConnectionUrl);
                }
@@ -184,7 +199,7 @@ public abstract class AbstractJDBCDriver {
          connection.setAutoCommit(false);
          final boolean tableExists;
          try (ResultSet rs = connection.getMetaData().getTables(null, null, tableName, null)) {
-            if ((rs == null) || (rs != null && !rs.next())) {
+            if (rs == null || !rs.next()) {
                tableExists = false;
                if (logger.isTraceEnabled()) {
                   logger.tracef("Table %s did not exist, creating it with SQL=%s", tableName, Arrays.toString(sqls));
@@ -227,7 +242,12 @@ public abstract class AbstractJDBCDriver {
                   }
                }
             } catch (SQLException e) {
-               logger.warn(JDBCUtils.appendSQLExceptionDetails(new StringBuilder("Can't verify the initialization of table ").append(tableName).append(" due to:"), e, sqlProvider.getCountJournalRecordsSQL()));
+               //that's not a real issue and do not deserve any user-level log:
+               //some DBMS just return stale information about table existence
+               //and can fail on later attempts to access them
+               if (logger.isTraceEnabled()) {
+                  logger.trace(JDBCUtils.appendSQLExceptionDetails(new StringBuilder("Can't verify the initialization of table ").append(tableName).append(" due to:"), e, sqlProvider.getCountJournalRecordsSQL()));
+               }
                try {
                   connection.rollback();
                } catch (SQLException rollbackEx) {
@@ -293,7 +313,11 @@ public abstract class AbstractJDBCDriver {
 
    public final void setConnection(Connection connection) {
       if (this.connection == null) {
-         this.connection = connection;
+         if (logger.isTraceEnabled() && !(connection instanceof LoggingConnection)) {
+            this.connection = new LoggingConnection(connection, logger);
+         } else {
+            this.connection = connection;
+         }
       }
    }
 

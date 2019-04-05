@@ -49,6 +49,46 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
    }
 
    @Override
+   public int getConsumersBeforeDispatch() {
+      return 0;
+   }
+
+   @Override
+   public void setConsumersBeforeDispatch(int consumersBeforeDispatch) {
+
+   }
+
+   @Override
+   public long getDelayBeforeDispatch() {
+      return 0;
+   }
+
+   @Override
+   public void setDelayBeforeDispatch(long delayBeforeDispatch) {
+
+   }
+
+   @Override
+   public long getDispatchStartTime() {
+      return 0;
+   }
+
+   @Override
+   public boolean isDispatching() {
+      return false;
+   }
+
+   @Override
+   public void setDispatching(boolean dispatching) {
+
+   }
+
+   @Override
+   public boolean allowsReferenceCallback() {
+      return false;
+   }
+
+   @Override
    public boolean isExclusive() {
       // no-op
       return false;
@@ -66,7 +106,52 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
    }
 
    @Override
+   public SimpleString getLastValueKey() {
+      return null;
+   }
+
+   @Override
+   public boolean isNonDestructive() {
+      return false;
+   }
+
+   @Override
+   public void setNonDestructive(boolean nonDestructive) {
+
+   }
+
+   @Override
    public void setMaxConsumer(int maxConsumers) {
+
+   }
+
+   @Override
+   public int getGroupBuckets() {
+      return 0;
+   }
+
+   @Override
+   public void setGroupBuckets(int groupBuckets) {
+
+   }
+
+   @Override
+   public boolean isGroupRebalance() {
+      return false;
+   }
+
+   @Override
+   public void setGroupRebalance(boolean groupRebalance) {
+
+   }
+
+   @Override
+   public boolean isConfigurationManaged() {
+      return false;
+   }
+
+   @Override
+   public void setConfigurationManaged(boolean configurationManaged) {
 
    }
 
@@ -349,6 +434,11 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
    }
 
    @Override
+   public long getConsumerRemovedTimestamp() {
+      return 0;
+   }
+
+   @Override
    public ReferenceCounter getConsumersRefCount() {
       return null;  //To change body of implemented methods use File | Settings | File Templates.
    }
@@ -389,6 +479,11 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
    public Filter getFilter() {
       // no-op
       return null;
+   }
+
+   @Override
+   public void setFilter(Filter filter) {
+
    }
 
    @Override
@@ -532,6 +627,24 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
    }
 
    @Override
+   public boolean isAutoDelete() {
+      // no-op
+      return false;
+   }
+
+   @Override
+   public long getAutoDeleteDelay() {
+      // no-op
+      return -1;
+   }
+
+   @Override
+   public long getAutoDeleteMessageCount() {
+      // no-op
+      return -1;
+   }
+
+   @Override
    public boolean isTemporary() {
       // no-op
       return false;
@@ -665,6 +778,9 @@ public class FakeQueue extends CriticalComponentImpl implements Queue {
 
    public void setPageSubscription(PageSubscription sub) {
       this.subs = sub;
+      if (subs != null) {
+         sub.setQueue(this);
+      }
    }
 
    @Override

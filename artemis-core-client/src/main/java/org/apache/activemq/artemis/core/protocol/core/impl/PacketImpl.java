@@ -31,11 +31,17 @@ public class PacketImpl implements Packet {
 
    // 2.0.0
    public static final int ADDRESSING_CHANGE_VERSION = 129;
-   public static final int SHARED_QUEUE_SECURITY_FIX_CHANGE_VERSION = 130;
+
+   // 2.7.0
+   public static final int ARTEMIS_2_7_0_VERSION = 130;
+   public static final int ASYNC_RESPONSE_CHANGE_VERSION = ARTEMIS_2_7_0_VERSION;
+   public static final int CONSUMER_PRIORITY_CHANGE_VERSION = ARTEMIS_2_7_0_VERSION;
 
 
    public static final SimpleString OLD_QUEUE_PREFIX = new SimpleString("jms.queue.");
+   public static final SimpleString OLD_TEMP_QUEUE_PREFIX = new SimpleString("jms.tempqueue.");
    public static final SimpleString OLD_TOPIC_PREFIX = new SimpleString("jms.topic.");
+   public static final SimpleString OLD_TEMP_TOPIC_PREFIX = new SimpleString("jms.temptopic.");
 
    // The minimal size for all the packets, Common data for all the packets (look at
    // PacketImpl.encode)
@@ -270,6 +276,7 @@ public class PacketImpl implements Packet {
 
    public static final byte SESS_BINDINGQUERY_RESP_V4 = -15;
 
+
    // Static --------------------------------------------------------
 
    public PacketImpl(final byte type) {
@@ -313,7 +320,7 @@ public class PacketImpl implements Packet {
 
       encodeHeader(buffer);
 
-      encodeRest(buffer);
+      encodeRest(buffer, connection);
 
       encodeSize(buffer);
 
@@ -356,7 +363,7 @@ public class PacketImpl implements Packet {
       size = buffer.readerIndex();
    }
 
-   protected ByteBuf copyMessageBuffer(ByteBuf buffer, int skipBytes) {
+   protected static ByteBuf copyMessageBuffer(ByteBuf buffer, int skipBytes) {
 
       ByteBuf newNettyBuffer = Unpooled.buffer(buffer.capacity() - PACKET_HEADERS_SIZE - skipBytes);
 
@@ -387,6 +394,10 @@ public class PacketImpl implements Packet {
    }
 
    public void encodeRest(final ActiveMQBuffer buffer) {
+   }
+
+   public void encodeRest(final ActiveMQBuffer buffer, final CoreRemotingConnection coreRemotingConnection) {
+      encodeRest(buffer);
    }
 
    public void decodeRest(final ActiveMQBuffer buffer) {
@@ -426,7 +437,7 @@ public class PacketImpl implements Packet {
    }
 
    protected String getParentString() {
-      return "PACKET(" + this.getClass().getSimpleName() + ")[type=" + type + ", channelID=" + channelID + ", packetObject=" + this.getClass().getSimpleName();
+      return "PACKET(" + this.getClass().getSimpleName() + ")[type=" + type + ", channelID=" + channelID + ", responseAsync=" + isResponseAsync() + ", requiresResponse=" + isRequiresResponse() + ", correlationID=" + getCorrelationID() + ", packetObject=" + this.getClass().getSimpleName();
    }
 
    private int stringEncodeSize(final String str) {
@@ -435,6 +446,25 @@ public class PacketImpl implements Packet {
 
    protected int nullableStringEncodeSize(final String str) {
       return DataConstants.SIZE_BOOLEAN + (str != null ? stringEncodeSize(str) : 0);
+   }
+
+   @Override
+   public boolean isRequiresResponse() {
+      return false;
+   }
+
+   @Override
+   public boolean isResponseAsync() {
+      return false;
+   }
+
+   @Override
+   public long getCorrelationID() {
+      return -1;
+   }
+
+   @Override
+   public void setCorrelationID(long correlationID) {
    }
 
 

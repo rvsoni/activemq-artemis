@@ -19,7 +19,6 @@ package org.apache.activemq.artemis.core.persistence.impl.journal;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -40,6 +39,7 @@ import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.Pair;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.config.Configuration;
+import org.apache.activemq.artemis.core.io.IOCallback;
 import org.apache.activemq.artemis.core.io.IOCriticalErrorListener;
 import org.apache.activemq.artemis.core.io.SequentialFile;
 import org.apache.activemq.artemis.core.io.SequentialFileFactory;
@@ -161,16 +161,7 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
       journalFF.setDatasync(config.isJournalDatasync());
 
 
-      int fileSize = config.getJournalFileSize();
-      // we need to correct the file size if its not a multiple of the alignement
-      int modulus = fileSize % journalFF.getAlignment();
-      if (modulus != 0) {
-         int difference = modulus;
-         int low = config.getJournalFileSize() - difference;
-         int high = low + journalFF.getAlignment();
-         fileSize = difference < journalFF.getAlignment() / 2 ? low : high;
-         ActiveMQServerLogger.LOGGER.invalidJournalFileSize(config.getJournalFileSize(), fileSize, journalFF.getAlignment());
-      }
+      int fileSize = fixJournalFileSize(config.getJournalFileSize(), journalFF.getAlignment());
       Journal localMessage = createMessageJournal(config, criticalErrorListener, fileSize);
 
       messageJournal = localMessage;
@@ -185,6 +176,29 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
       } else {
          pageMaxConcurrentIO = null;
       }
+   }
+
+   /**
+    * We need to correct the file size if its not a multiple of the alignement
+    * @param fileSize : the configured file size.
+    * @param alignment : the alignment.
+    * @return the fixed file size.
+    */
+   protected int fixJournalFileSize(int fileSize, int alignment) {
+      int size = fileSize;
+      if (fileSize <= alignment) {
+         size = alignment;
+      } else {
+         int modulus = fileSize % alignment;
+         if (modulus != 0) {
+            int difference = modulus;
+            int low = fileSize - difference;
+            int high = low + alignment;
+            size = difference < alignment / 2 ? low : high;
+            ActiveMQServerLogger.LOGGER.invalidJournalFileSize(fileSize, size, alignment);
+         }
+      }
+      return size;
    }
 
    protected Journal createMessageJournal(Configuration config,
@@ -229,9 +243,21 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
    }
 
    @Override
-   public synchronized void stop(boolean ioCriticalError, boolean sendFailover) throws Exception {
+   public void stop(boolean ioCriticalError, boolean sendFailover) throws Exception {
+      try {
+         enterCritical(CRITICAL_STOP);
+         synchronized (this) {
+            if (internalStop(ioCriticalError, sendFailover))
+               return;
+         }
+      } finally {
+         leaveCritical(CRITICAL_STOP);
+      }
+   }
+
+   private boolean internalStop(boolean ioCriticalError, boolean sendFailover) throws Exception {
       if (!started) {
-         return;
+         return true;
       }
 
       if (!ioCriticalError) {
@@ -255,30 +281,41 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
          // that's ok
       }
 
-      // We cache the variable as the replicator could be changed between here and the time we call stop
-      // since sendLiveIsStopping may issue a close back from the channel
-      // and we want to ensure a stop here just in case
-      ReplicationManager replicatorInUse = replicator;
-      if (replicatorInUse != null) {
-         if (sendFailover) {
-            final OperationContext token = replicator.sendLiveIsStopping(ReplicationLiveIsStoppingMessage.LiveStopping.FAIL_OVER);
-            if (token != null) {
-               try {
-                  token.waitCompletion(5000);
-               } catch (Exception e) {
-                  // ignore it
+      enterCritical(CRITICAL_STOP_2);
+      storageManagerLock.writeLock().lock();
+      try {
+
+         // We cache the variable as the replicator could be changed between here and the time we call stop
+         // since sendLiveIsStopping may issue a close back from the channel
+         // and we want to ensure a stop here just in case
+         ReplicationManager replicatorInUse = replicator;
+         if (replicatorInUse != null) {
+            if (sendFailover) {
+               final OperationContext token = replicator.sendLiveIsStopping(ReplicationLiveIsStoppingMessage.LiveStopping.FAIL_OVER);
+               if (token != null) {
+                  try {
+                     token.waitCompletion(5000);
+                  } catch (Exception e) {
+                     // ignore it
+                  }
                }
             }
+            // we cannot clear replication tokens, otherwise clients will eventually be informed of completion during a server's shutdown
+            // while the backup will never receive then
+            replicatorInUse.stop(false);
          }
-         replicatorInUse.stop();
+         bindingsJournal.stop();
+
+         messageJournal.stop();
+
+         journalLoaded = false;
+
+         started = false;
+      } finally {
+         storageManagerLock.writeLock().unlock();
+         leaveCritical(CRITICAL_STOP_2);
       }
-      bindingsJournal.stop();
-
-      messageJournal.stop();
-
-      journalLoaded = false;
-
-      started = false;
+      return false;
    }
 
    /**
@@ -286,17 +323,18 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
     */
    @Override
    protected void performCachedLargeMessageDeletes() {
-      for (Long largeMsgId : largeMessagesToDelete) {
-         SequentialFile msg = createFileForLargeMessage(largeMsgId, LargeMessageExtension.DURABLE);
+      largeMessagesToDelete.forEach((messageId, largeServerMessage) -> {
+         SequentialFile msg = createFileForLargeMessage(messageId, LargeMessageExtension.DURABLE);
          try {
             msg.delete();
          } catch (Exception e) {
-            ActiveMQServerLogger.LOGGER.journalErrorDeletingMessage(e, largeMsgId);
+            ActiveMQServerLogger.LOGGER.journalErrorDeletingMessage(e, messageId);
          }
          if (replicator != null) {
-            replicator.largeMessageDelete(largeMsgId, JournalStorageManager.this);
+            replicator.largeMessageDelete(messageId, JournalStorageManager.this);
          }
-      }
+         confirmLargeMessage(largeServerMessage);
+      });
       largeMessagesToDelete.clear();
    }
 
@@ -417,15 +455,17 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
 
    // This should be accessed from this package only
    void deleteLargeMessageFile(final LargeServerMessage largeServerMessage) throws ActiveMQException {
-      if (largeServerMessage.getPendingRecordID() < 0) {
-         try {
-            // The delete file happens asynchronously
-            // And the client won't be waiting for the actual file to be deleted.
-            // We set a temporary record (short lived) on the journal
-            // to avoid a situation where the server is restarted and pending large message stays on forever
-            largeServerMessage.setPendingRecordID(storePendingLargeMessage(largeServerMessage.getMessageID(), largeServerMessage.getPendingRecordID()));
-         } catch (Exception e) {
-            throw new ActiveMQInternalErrorException(e.getMessage(), e);
+      synchronized (largeServerMessage) {
+         if (largeServerMessage.getPendingRecordID() < 0) {
+            try {
+               // The delete file happens asynchronously
+               // And the client won't be waiting for the actual file to be deleted.
+               // We set a temporary record (short lived) on the journal
+               // to avoid a situation where the server is restarted and pending large message stays on forever
+               largeServerMessage.setPendingRecordID(storePendingLargeMessage(largeServerMessage.getMessageID(), largeServerMessage.getPendingRecordID()));
+            } catch (Exception e) {
+               throw new ActiveMQInternalErrorException(e.getMessage(), e);
+            }
          }
       }
       final SequentialFile file = largeServerMessage.getFile();
@@ -437,10 +477,7 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
          readLock();
          try {
             if (isReplicated() && replicator.isSynchronizing()) {
-               synchronized (largeMessagesToDelete) {
-                  largeMessagesToDelete.add(Long.valueOf(largeServerMessage.getMessageID()));
-                  confirmLargeMessage(largeServerMessage);
-               }
+               largeMessagesToDelete.put(largeServerMessage.getMessageID(), largeServerMessage);
                return;
             }
          } finally {
@@ -470,11 +507,21 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
 
       };
 
-      if (executor == null) {
-         deleteAction.run();
-      } else {
-         executor.execute(deleteAction);
-      }
+      getContext(true).executeOnCompletion(new IOCallback() {
+         @Override
+         public void done() {
+            if (executor == null) {
+               deleteAction.run();
+            } else {
+               executor.execute(deleteAction);
+            }
+         }
+
+         @Override
+         public void onError(int errorCode, String errorMessage) {
+
+         }
+      });
    }
 
    @Override
@@ -701,11 +748,9 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
       // only send durable messages... // listFiles append a "." to anything...
       List<String> filenames = largeMessagesFactory.listFiles("msg");
 
-      List<Long> idList = new ArrayList<>();
       for (String filename : filenames) {
-         Long id = getLargeMessageIdFromFilename(filename);
-         if (!largeMessagesToDelete.contains(id)) {
-            idList.add(id);
+         long id = getLargeMessageIdFromFilename(filename);
+         if (!largeMessagesToDelete.containsKey(id)) {
             SequentialFile seqFile = largeMessagesFactory.createSequentialFile(filename);
             long size = seqFile.size();
             largeMessages.put(id, new Pair<>(filename, size));
@@ -757,6 +802,32 @@ public class JournalStorageManager extends AbstractJournalStorageManager {
          performCachedLargeMessageDeletes();
       } finally {
          storageManagerLock.writeLock().unlock();
+      }
+   }
+
+   public final void addBytesToLargeMessage(final SequentialFile file,
+                                            final long messageId,
+                                            final ActiveMQBuffer bytes) throws Exception {
+      readLock();
+      try {
+         file.position(file.size());
+         if (bytes.byteBuf() != null && bytes.byteBuf().nioBufferCount() == 1) {
+            final ByteBuffer nioBytes = bytes.byteBuf().internalNioBuffer(bytes.readerIndex(), bytes.readableBytes());
+            file.writeDirect(nioBytes, false);
+
+            if (isReplicated()) {
+               //copy defensively bytes
+               final byte[] bytesCopy = new byte[bytes.readableBytes()];
+               bytes.getBytes(bytes.readerIndex(), bytesCopy);
+               replicator.largeMessageWrite(messageId, bytesCopy);
+            }
+         } else {
+            final byte[] bytesCopy = new byte[bytes.readableBytes()];
+            bytes.readBytes(bytesCopy);
+            addBytesToLargeMessage(file, messageId, bytesCopy);
+         }
+      } finally {
+         readUnLock();
       }
    }
 

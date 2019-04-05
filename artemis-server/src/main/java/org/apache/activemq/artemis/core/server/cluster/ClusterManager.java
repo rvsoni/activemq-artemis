@@ -406,8 +406,8 @@ public final class ClusterManager implements ActiveMQComponent {
          return;
       }
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.beforeDeployBridge(config));
+      if (server.hasBrokerBridgePlugins()) {
+         server.callBrokerBridgePlugins(plugin -> plugin.beforeDeployBridge(config));
       }
 
       Queue queue = (Queue) binding.getBindable();
@@ -475,7 +475,7 @@ public final class ClusterManager implements ActiveMQComponent {
 
       clusterLocators.add(serverLocator);
 
-      Bridge bridge = new BridgeImpl(serverLocator, config.getInitialConnectAttempts(), config.getReconnectAttempts(), config.getReconnectAttemptsOnSameNode(), config.getRetryInterval(), config.getRetryIntervalMultiplier(), config.getMaxRetryInterval(), nodeManager.getUUID(), new SimpleString(config.getName()), queue, executorFactory.getExecutor(), FilterImpl.createFilter(config.getFilterString()), SimpleString.toSimpleString(config.getForwardingAddress()), scheduledExecutor, transformer, config.isUseDuplicateDetection(), config.getUser(), config.getPassword(), server);
+      Bridge bridge = new BridgeImpl(serverLocator, config.getInitialConnectAttempts(), config.getReconnectAttempts(), config.getReconnectAttemptsOnSameNode(), config.getRetryInterval(), config.getRetryIntervalMultiplier(), config.getMaxRetryInterval(), nodeManager.getUUID(), new SimpleString(config.getName()), queue, executorFactory.getExecutor(), FilterImpl.createFilter(config.getFilterString()), SimpleString.toSimpleString(config.getForwardingAddress()), scheduledExecutor, transformer, config.isUseDuplicateDetection(), config.getUser(), config.getPassword(), server, config.getRoutingType());
 
       bridges.put(config.getName(), bridge);
 
@@ -483,8 +483,8 @@ public final class ClusterManager implements ActiveMQComponent {
 
       bridge.start();
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.afterDeployBridge(bridge));
+      if (server.hasBrokerBridgePlugins()) {
+         server.callBrokerBridgePlugins(plugin -> plugin.afterDeployBridge(bridge));
       }
    }
 

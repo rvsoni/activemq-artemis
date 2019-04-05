@@ -156,6 +156,22 @@ public class ActiveMQServerControlUsingCoreTest extends ActiveMQServerControlTes
          }
 
          @Override
+         public String updateQueue(@Parameter(name = "name", desc = "Name of the queue") String name,
+                                   @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
+                                   @Parameter(name = "filter", desc = "The filter to use on the queue") String filter,
+                                   @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") Integer maxConsumers,
+                                   @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") Boolean purgeOnNoConsumers,
+                                   @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive,
+                                   @Parameter(name = "groupRebalance", desc = "If the queue should rebalance groups when a consumer is added") Boolean groupRebalance,
+                                   @Parameter(name = "groupBuckets", desc = "Number of buckets that should be used for message groups, -1 (default) is unlimited, and groups by raw key instead") Integer groupBuckets,
+                                   @Parameter(name = "nonDestructive", desc = "If the queue should be nonDestructive") Boolean nonDestructive,
+                                   @Parameter(name = "consumersBeforeDispatch", desc = "Number of consumers needed before dispatch can start") Integer consumersBeforeDispatch,
+                                   @Parameter(name = "delayBeforeDispatch", desc = "Delay to wait before dispatching if number of consumers before dispatch is not met") Long delayBeforeDispatch,
+                                   @Parameter(name = "user", desc = "The user associated with this queue") String user) throws Exception {
+            return (String) proxy.invokeOperation("updateQueue", name, routingType, filter, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, user);
+         }
+
+         @Override
          public void deleteAddress(@Parameter(name = "name", desc = "The name of the address") String name) throws Exception {
             proxy.invokeOperation("deleteAddress", name);
          }
@@ -186,6 +202,11 @@ public class ActiveMQServerControlUsingCoreTest extends ActiveMQServerControlTes
          @Override
          public void createQueue(String address,String name, String filter, boolean durable, String routingType) throws Exception {
             proxy.invokeOperation("createQueue", address, name, filter, durable, routingType);
+         }
+
+         @Override
+         public String createQueue(String address, String routingType, String name, String filter, boolean durable, int maxConsumers, boolean purgeOnNoConsumers, boolean exclusive, boolean groupRebalance, int groupBuckets, boolean lastValue, String lastValueKey, boolean nonDestructive, int consumersBeforeDispatch, long delayBeforeDispatch, boolean autoDelete, long autoDeleteDelay, long autoDeleteMessageCount, boolean autoCreateAddress) throws Exception {
+            return (String) proxy.invokeOperation("createQueue", address, routingType, name, filter, durable, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoCreateAddress);
          }
 
          @Override
@@ -303,6 +324,41 @@ public class ActiveMQServerControlUsingCoreTest extends ActiveMQServerControlTes
             }
 
             return null;
+         }
+
+         @Override
+         public String[] getClusterConnectionNames() {
+            try {
+               return (String[]) proxy.invokeOperation(String.class, "getClusterConnectionNames");
+            } catch (Exception e) {
+               e.printStackTrace();
+            }
+
+            return null;
+         }
+
+         @Override
+         public void addUser(String username,
+                             String password,
+                             String role,
+                             boolean plaintext) throws Exception {
+            proxy.invokeOperation("addUser", username, password, role, plaintext);
+
+         }
+
+         @Override
+         public String listUser(String username) throws Exception {
+            return (String) proxy.invokeOperation("listUser", username, String.class);
+         }
+
+         @Override
+         public void removeUser(String username) throws Exception {
+            proxy.invokeOperation("removeUser", username);
+         }
+
+         @Override
+         public void resetUser(String username, String password, String roles) throws Exception {
+            proxy.invokeOperation("resetUser", username, password, roles);
          }
 
          @Override

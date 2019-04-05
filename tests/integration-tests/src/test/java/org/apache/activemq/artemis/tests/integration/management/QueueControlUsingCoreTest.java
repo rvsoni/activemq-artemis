@@ -102,6 +102,21 @@ public class QueueControlUsingCoreTest extends QueueControlTest {
          }
 
          @Override
+         public String countMessages(final String filter, final String groupByFilter) throws Exception {
+            return (String) proxy.invokeOperation(String.class, "countMessages", filter, groupByFilter);
+         }
+
+         @Override
+         public long countDeliveringMessages(final String filter) throws Exception {
+            return (Long) proxy.invokeOperation(Long.class, "countDeliveringMessages", filter);
+         }
+
+         @Override
+         public String countDeliveringMessages(final String filter, final String groupByFilter) throws Exception {
+            return (String) proxy.invokeOperation(String.class, "countDeliveringMessages", filter, groupByFilter);
+         }
+
+         @Override
          public boolean expireMessage(final long messageID) throws Exception {
             return (Boolean) proxy.invokeOperation("expireMessage", messageID);
          }
@@ -139,6 +154,11 @@ public class QueueControlUsingCoreTest extends QueueControlTest {
          @Override
          public boolean isPurgeOnNoConsumers() {
             return (Boolean) proxy.retrieveAttributeValue("purgeOnNoConsumers");
+         }
+
+         @Override
+         public boolean isConfigurationManaged() {
+            return (Boolean) proxy.retrieveAttributeValue("configurationManaged");
          }
 
          @Override

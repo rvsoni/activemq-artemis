@@ -56,7 +56,7 @@ function ArtemisConsole() {
    };
 
    this.retryMessage = function (mbean, jolokia, id, method) {
-      jolokia.execute(mbean, "retryMessage(java.lang.String)", id,  method);
+      jolokia.execute(mbean, "retryMessage(long)", id,  method);
    };
 
    this.sendMessage = function (mbean, jolokia, headers, type, body, durable, user, pwd, method) {
@@ -74,6 +74,11 @@ function ArtemisConsole() {
    this.ownUnescape = function (name) {
       //simple return unescape(name); does not work for this :(
       return name.replace(/\\\\/g, "\\").replace(/\\\*/g, "*").replace(/\\\?/g, "?");
+   };
+
+   this.isBackup = function (jolokia, mBean) {
+      var req1 = { type: "read", mbean: mBean, attribute: "Backup"};
+      return jolokia.request(req1, {method: "get"});
    };
 }
 

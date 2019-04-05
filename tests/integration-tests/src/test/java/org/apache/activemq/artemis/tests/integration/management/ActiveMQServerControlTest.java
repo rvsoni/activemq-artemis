@@ -55,6 +55,7 @@ import org.apache.activemq.artemis.api.jms.ActiveMQJMSClient;
 import org.apache.activemq.artemis.api.jms.JMSFactoryType;
 import org.apache.activemq.artemis.core.client.impl.ClientSessionFactoryImpl;
 import org.apache.activemq.artemis.core.client.impl.ClientSessionImpl;
+import org.apache.activemq.artemis.core.config.ClusterConnectionConfiguration;
 import org.apache.activemq.artemis.core.config.Configuration;
 import org.apache.activemq.artemis.core.config.impl.SecurityConfiguration;
 import org.apache.activemq.artemis.core.messagecounter.impl.MessageCounterManagerImpl;
@@ -70,7 +71,7 @@ import org.apache.activemq.artemis.core.server.ServerSession;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.settings.impl.SlowConsumerPolicy;
 import org.apache.activemq.artemis.core.transaction.impl.XidImpl;
-import org.apache.activemq.artemis.jlibaio.LibaioContext;
+import org.apache.activemq.artemis.nativo.jlibaio.LibaioContext;
 import org.apache.activemq.artemis.jms.client.ActiveMQConnection;
 import org.apache.activemq.artemis.jms.client.ActiveMQConnectionFactory;
 import org.apache.activemq.artemis.jms.client.ActiveMQSession;
@@ -84,6 +85,8 @@ import org.apache.activemq.artemis.utils.UUIDGenerator;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+
+import static org.apache.activemq.artemis.jms.client.ActiveMQConnection.JMS_SESSION_CLIENT_ID_PROPERTY;
 
 public class ActiveMQServerControlTest extends ManagementTestBase {
 
@@ -461,6 +464,27 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       serverControl.destroyQueue(multicastName.toString());
       Assert.assertFalse(ActiveMQServerControlTest.contains(anycastName.toString(), serverControl.getQueueNames()));
       Assert.assertFalse(ActiveMQServerControlTest.contains(multicastName.toString(), serverControl.getQueueNames()));
+   }
+
+   @Test
+   public void testGetClusterConnectionNames() throws Exception {
+      String clusterConnection1 = RandomUtil.randomString();
+      String clusterConnection2 = RandomUtil.randomString();
+
+      ActiveMQServerControl serverControl = createManagementControl();
+
+      Assert.assertFalse(ActiveMQServerControlTest.contains(clusterConnection1, serverControl.getClusterConnectionNames()));
+      Assert.assertFalse(ActiveMQServerControlTest.contains(clusterConnection2, serverControl.getClusterConnectionNames()));
+
+      server.stop();
+      server
+         .getConfiguration()
+         .addClusterConfiguration(new ClusterConnectionConfiguration().setName(clusterConnection1).setConnectorName(connectorConfig.getName()))
+         .addClusterConfiguration(new ClusterConnectionConfiguration().setName(clusterConnection2).setConnectorName(connectorConfig.getName()));
+      server.start();
+
+      Assert.assertTrue(ActiveMQServerControlTest.contains(clusterConnection1, serverControl.getClusterConnectionNames()));
+      Assert.assertTrue(ActiveMQServerControlTest.contains(clusterConnection2, serverControl.getClusterConnectionNames()));
    }
 
    @Test
@@ -958,6 +982,55 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       Assert.assertFalse(txDetails.matches(".*m6.*"));
       Assert.assertFalse(txDetails.matches(".*m7.*"));
       Assert.assertFalse(txDetails.matches(".*m8.*"));
+   }
+
+   @Test
+   public void testListPreparedTransactionDetailsOnConsumer() throws Exception {
+      SimpleString atestq = new SimpleString("BasicXaTestq");
+      Xid xid = newXID();
+
+      ServerLocator locator = createInVMNonHALocator();
+      ClientSessionFactory csf = createSessionFactory(locator);
+      ClientSession clientSession = csf.createSession(true, false, false);
+      clientSession.createQueue(atestq, atestq, null, true);
+
+      ClientMessage m1 = createTextMessage(clientSession, "");
+      ClientMessage m2 = createTextMessage(clientSession, "");
+      ClientMessage m3 = createTextMessage(clientSession, "");
+      ClientMessage m4 = createTextMessage(clientSession, "");
+      m1.putStringProperty("m1", "valuem1");
+      m2.putStringProperty("m2", "valuem2");
+      m3.putStringProperty("m3", "valuem3");
+      m4.putStringProperty("m4", "valuem4");
+      ClientProducer clientProducer = clientSession.createProducer(atestq);
+      clientSession.start(xid, XAResource.TMNOFLAGS);
+      clientProducer.send(m1);
+      clientProducer.send(m2);
+      clientProducer.send(m3);
+      clientProducer.send(m4);
+      clientSession.end(xid, XAResource.TMSUCCESS);
+      clientSession.prepare(xid);
+      clientSession.commit(xid, false);
+
+      ClientConsumer consumer = clientSession.createConsumer(atestq);
+      clientSession.start();
+      xid = newXID();
+      clientSession.start(xid, XAResource.TMNOFLAGS);
+      m1 = consumer.receive(1000);
+      Assert.assertNotNull(m1);
+      m1.acknowledge();
+      clientSession.end(xid, XAResource.TMSUCCESS);
+      clientSession.prepare(xid);
+      ActiveMQServerControl serverControl = createManagementControl();
+      String jsonOutput = serverControl.listPreparedTransactionDetailsAsJSON();
+
+      // just one message is pending, and it should be listed on the output
+      Assert.assertTrue(jsonOutput.lastIndexOf("valuem1") > 0);
+      Assert.assertTrue(jsonOutput.lastIndexOf("valuem2") < 0);
+      Assert.assertTrue(jsonOutput.lastIndexOf("valuem3") < 0);
+      Assert.assertTrue(jsonOutput.lastIndexOf("valuem4") < 0);
+      clientSession.close();
+      locator.close();
    }
 
    @Test
@@ -1550,8 +1623,8 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       Assert.assertEquals("myUser", second.getString("principal"));
       Assert.assertTrue(second.getJsonNumber("creationTime").longValue() > 0);
       Assert.assertEquals(1, second.getJsonNumber("consumerCount").longValue());
-      Assert.assertTrue(second.getJsonString("metadata").getString().contains("foo=bar"));
-      Assert.assertTrue(second.getJsonString("metadata").getString().contains("bar=baz"));
+      Assert.assertEquals(second.getJsonObject("metadata").getJsonString("foo").getString(), "bar");
+      Assert.assertEquals(second.getJsonObject("metadata").getJsonString("bar").getString(), "baz");
    }
 
    @Test
@@ -1572,8 +1645,8 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       JsonArray array = JsonUtil.readJsonArray(jsonString);
       Assert.assertEquals(1 + (usingCore() ? 1 : 0), array.size());
       JsonObject obj = lookupSession(array, ((ActiveMQConnection)con).getInitialSession());
-      Assert.assertTrue(obj.getString("metadata").contains(ClientSession.JMS_SESSION_CLIENT_ID_PROPERTY + "=" + clientID));
-      Assert.assertTrue(obj.getString("metadata").contains(ClientSession.JMS_SESSION_IDENTIFIER_PROPERTY));
+      Assert.assertEquals(obj.getJsonObject("metadata").getJsonString(ActiveMQConnection.JMS_SESSION_CLIENT_ID_PROPERTY).getString(), clientID);
+      Assert.assertNotNull(obj.getJsonObject("metadata").getJsonString(ClientSession.JMS_SESSION_IDENTIFIER_PROPERTY));
    }
 
    @Test
@@ -1643,7 +1716,11 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       Assert.assertEquals("messagesAcked", "0", array.getJsonObject(0).getString("messagesAcked"));
       Assert.assertEquals("deliveringCount", "0", array.getJsonObject(0).getString("deliveringCount"));
       Assert.assertEquals("messagesKilled", "0", array.getJsonObject(0).getString("messagesKilled"));
-      Assert.assertEquals("deliverDeliver", "true", array.getJsonObject(0).getString("deliverDeliver"));
+      String resultDirectDeliver = array.getJsonObject(0).getString("deliverDeliver");
+      // if there is a core consumer, the result here would be true (if directDeliver is supported).
+      // as for what we expect it's either true or false through management, we are not testing for directDeliver here, just
+      // if management works.
+      Assert.assertTrue(resultDirectDeliver.equals("true") || resultDirectDeliver.equals("false"));
 
    }
 
@@ -2449,6 +2526,44 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
    }
 
    @Test
+   public void testListConnectionsClientID() throws Exception {
+      SimpleString queueName1 = new SimpleString("my_queue_one");
+      SimpleString addressName1 = new SimpleString("my_address_one");
+
+      ActiveMQServerControl serverControl = createManagementControl();
+
+      server.addAddressInfo(new AddressInfo(addressName1, RoutingType.ANYCAST));
+      server.createQueue(addressName1, RoutingType.ANYCAST, queueName1, null, false, false);
+
+      ClientSessionFactoryImpl csf = null;
+
+      // create some consumers
+      try (ServerLocator locator = createInVMNonHALocator()) {
+         //sleep as test compares creationTime
+         csf = (ClientSessionFactoryImpl) createSessionFactory(locator);
+         ClientSession session1_c1 = csf.createSession();
+         ClientSession session2_c1 = csf.createSession();
+         session1_c1.addMetaData(ClientSession.JMS_SESSION_IDENTIFIER_PROPERTY, "");
+         session1_c1.addMetaData(JMS_SESSION_CLIENT_ID_PROPERTY, "MYClientID");
+
+         String filterString = createJsonFilter("SESSION_COUNT", "GREATER_THAN", "1");
+         String connectionsAsJsonString = serverControl.listConnections(filterString, 1, 50);
+         JsonObject connectionsAsJsonObject = JsonUtil.readJsonObject(connectionsAsJsonString);
+         JsonArray array = (JsonArray) connectionsAsJsonObject.get("data");
+
+         Assert.assertEquals("number of connections returned from query", 1, array.size());
+         JsonObject jsonConnection = array.getJsonObject(0);
+
+         //check all fields
+         Assert.assertEquals("clientID", "MYClientID", jsonConnection.getString("clientID"));
+      } finally {
+         if (csf != null) {
+            csf.close();
+         }
+      }
+   }
+
+   @Test
    public void testListProducers() throws Exception {
       SimpleString queueName1 = new SimpleString("my_queue_one");
       SimpleString addressName1 = new SimpleString("my_address_one");
@@ -2619,6 +2734,46 @@ public class ActiveMQServerControlTest extends ManagementTestBase {
       serverControl.closeConsumerWithID(sessionID, Long.toString(clientID));
       Wait.waitFor(() -> ((org.apache.activemq.artemis.jms.client.ActiveMQMessageConsumer)JMSclient).isClosed());
       Assert.assertTrue(((org.apache.activemq.artemis.jms.client.ActiveMQMessageConsumer)JMSclient).isClosed());
+   }
+
+   @Test
+   public void testAddUser() throws Exception {
+      ActiveMQServerControl serverControl = createManagementControl();
+      try {
+         serverControl.addUser("x", "x", "x", true);
+         fail();
+      } catch (Exception expected) {
+      }
+   }
+
+   @Test
+   public void testRemoveUser() throws Exception {
+      ActiveMQServerControl serverControl = createManagementControl();
+      try {
+         serverControl.removeUser("x");
+         fail();
+      } catch (Exception expected) {
+      }
+   }
+
+   @Test
+   public void testListUser() throws Exception {
+      ActiveMQServerControl serverControl = createManagementControl();
+      try {
+         serverControl.listUser("x");
+         fail();
+      } catch (Exception expected) {
+      }
+   }
+
+   @Test
+   public void testResetUser() throws Exception {
+      ActiveMQServerControl serverControl = createManagementControl();
+      try {
+         serverControl.resetUser("x","x","x");
+         fail();
+      } catch (Exception expected) {
+      }
    }
 
 

@@ -794,7 +794,77 @@ public class ScheduledDeliveryHandlerTest extends Assert {
       }
 
       @Override
+      public boolean allowsReferenceCallback() {
+         return false;
+      }
+
+      @Override
+      public int getConsumersBeforeDispatch() {
+         return 0;
+      }
+
+      @Override
+      public void setConsumersBeforeDispatch(int consumersBeforeDispatch) {
+
+      }
+
+      @Override
+      public long getDelayBeforeDispatch() {
+         return 0;
+      }
+
+      @Override
+      public void setDelayBeforeDispatch(long delayBeforeDispatch) {
+
+      }
+
+      @Override
+      public long getDispatchStartTime() {
+         return 0;
+      }
+
+      @Override
+      public boolean isDispatching() {
+         return false;
+      }
+
+      @Override
+      public void setDispatching(boolean dispatching) {
+
+      }
+
+      @Override
       public void setMaxConsumer(int maxConsumers) {
+
+      }
+
+      @Override
+      public int getGroupBuckets() {
+         return 0;
+      }
+
+      @Override
+      public void setGroupBuckets(int groupBuckets) {
+
+      }
+
+      @Override
+      public boolean isGroupRebalance() {
+         return false;
+      }
+
+      @Override
+      public void setGroupRebalance(boolean groupRebalance) {
+
+      }
+
+      @Override
+      public boolean isConfigurationManaged() {
+         return false;
+      }
+
+      @Override
+      public void setConfigurationManaged(boolean configurationManaged) {
 
       }
 
@@ -848,6 +918,10 @@ public class ScheduledDeliveryHandlerTest extends Assert {
       }
 
       @Override
+      public void setFilter(Filter filter) {
+      }
+
+      @Override
       public PageSubscription getPageSubscription() {
          return null;
       }
@@ -870,6 +944,24 @@ public class ScheduledDeliveryHandlerTest extends Assert {
       @Override
       public boolean isDurableMessage() {
          return false;
+      }
+
+      @Override
+      public boolean isAutoDelete() {
+         // no-op
+         return false;
+      }
+
+      @Override
+      public long getAutoDeleteDelay() {
+         // no-op
+         return -1;
+      }
+
+      @Override
+      public long getAutoDeleteMessageCount() {
+         // no-op
+         return -1;
       }
 
       @Override
@@ -909,6 +1001,11 @@ public class ScheduledDeliveryHandlerTest extends Assert {
 
       @Override
       public int getConsumerCount() {
+         return 0;
+      }
+
+      @Override
+      public long getConsumerRemovedTimestamp() {
          return 0;
       }
 
@@ -1402,6 +1499,21 @@ public class ScheduledDeliveryHandlerTest extends Assert {
       @Override
       public boolean isLastValue() {
          return false;
+      }
+
+      @Override
+      public SimpleString getLastValueKey() {
+         return null;
+      }
+
+      @Override
+      public boolean isNonDestructive() {
+         return false;
+      }
+
+      @Override
+      public void setNonDestructive(boolean nonDestructive) {
+
       }
 
       @Override

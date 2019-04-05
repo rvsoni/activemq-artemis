@@ -31,6 +31,8 @@ import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
 import org.apache.activemq.artemis.api.core.ActiveMQInterruptedException;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.Pair;
+import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
 import org.apache.activemq.artemis.api.core.client.ClientProducer;
@@ -50,15 +52,16 @@ import org.apache.activemq.artemis.core.client.impl.ServerLocatorInternal;
 import org.apache.activemq.artemis.core.filter.Filter;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
+import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.core.server.HandleStatus;
 import org.apache.activemq.artemis.core.server.LargeServerMessage;
 import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.cluster.Bridge;
-import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.core.server.impl.QueueImpl;
 import org.apache.activemq.artemis.core.server.management.Notification;
 import org.apache.activemq.artemis.core.server.management.NotificationService;
+import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.spi.core.protocol.EmbedMessageUtil;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.remoting.ReadyListener;
@@ -133,6 +136,11 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
    // on cases where sub-classes need a consumer
    protected volatile ClientSessionInternal sessionConsumer;
 
+
+   // this will happen if a disconnect happened
+   // upon reconnection we need to send the nodeUP back into the topology
+   protected volatile boolean disconnectedAndDown = false;
+
    protected String targetNodeID;
 
    protected TopologyMember targetNode;
@@ -159,6 +167,10 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
 
    private ActiveMQServer server;
 
+   private final BridgeMetrics metrics = new BridgeMetrics();
+
+   private final ComponentConfigurationRoutingType routingType;
+
    public BridgeImpl(final ServerLocatorInternal serverLocator,
                      final int initialConnectAttempts,
                      final int reconnectAttempts,
@@ -177,7 +189,8 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
                      final boolean useDuplicateDetection,
                      final String user,
                      final String password,
-                     final ActiveMQServer server) {
+                     final ActiveMQServer server,
+                     final ComponentConfigurationRoutingType routingType) {
 
       this.sequentialID = server.getStorageManager().generateID();
 
@@ -218,6 +231,8 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
       this.password = password;
 
       this.server = server;
+
+      this.routingType = routingType;
    }
 
    /** For tests mainly */
@@ -518,6 +533,11 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
                }
                ref.getQueue().acknowledge(ref);
                pendingAcks.countDown();
+               metrics.incrementMessagesAcknowledged();
+
+               if (server.hasBrokerBridgePlugins()) {
+                  server.callBrokerBridgePlugins(plugin -> plugin.afterAcknowledgeBridge(this, ref));
+               }
             } else {
                if (logger.isTraceEnabled()) {
                   logger.trace("BridgeImpl::sendAcknowledged bridge " + this + " could not find reference for message " + message);
@@ -541,6 +561,20 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
       if (forwardingAddress != null) {
          // for AMQP messages this modification will be transient
          message.setAddress(forwardingAddress);
+      }
+
+      switch (routingType) {
+         case ANYCAST:
+            message.setRoutingType(RoutingType.ANYCAST);
+            break;
+         case MULTICAST:
+            message.setRoutingType(RoutingType.MULTICAST);
+            break;
+         case STRIP:
+            message.setRoutingType(null);
+            break;
+         case PASS:
+            break;
       }
 
       if (transformer != null) {
@@ -611,13 +645,29 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
          pendingAcks.countUp();
 
          try {
+            if (server.hasBrokerBridgePlugins()) {
+               server.callBrokerBridgePlugins(plugin -> plugin.beforeDeliverBridge(this, ref));
+            }
+
+            final HandleStatus status;
             if (message.isLargeMessage()) {
                deliveringLargeMessage = true;
                deliverLargeMessage(dest, ref, (LargeServerMessage) message);
-               return HandleStatus.HANDLED;
+               status = HandleStatus.HANDLED;
             } else {
-               return deliverStandardMessage(dest, ref, message);
+               status = deliverStandardMessage(dest, ref, message);
             }
+
+            //Only increment messages pending acknowledgement if handled by bridge
+            if (status == HandleStatus.HANDLED) {
+               metrics.incrementMessagesPendingAcknowledgement();
+            }
+
+            if (server.hasBrokerBridgePlugins()) {
+               server.callBrokerBridgePlugins(plugin -> plugin.afterDeliverBridge(this, ref, status));
+            }
+
+            return status;
          } catch (Exception e) {
             // If an exception happened, we must count down immediately
             pendingAcks.countDown();
@@ -771,6 +821,11 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
    }
 
    @Override
+   public BridgeMetrics getMetrics() {
+      return this.metrics;
+   }
+
+   @Override
    public String toString() {
       return this.getClass().getSimpleName() + "@" +
          Integer.toHexString(System.identityHashCode(this)) +
@@ -804,6 +859,7 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
       logger.debug(this + "\n\t::fail being called, permanently=" + permanently);
       //we need to make sure we remove the node from the topology so any incoming quorum requests are voted correctly
       if (targetNodeID != null) {
+         this.disconnectedAndDown = true;
          serverLocator.notifyNodeDown(System.currentTimeMillis(), targetNodeID);
       }
       if (queue != null) {
@@ -825,6 +881,11 @@ public class BridgeImpl implements Bridge, SessionFailureListener, SendAcknowled
 
    /* Hook for doing extra stuff after connection */
    protected void afterConnect() throws Exception {
+      if (disconnectedAndDown && targetNodeID != null && targetNode != null) {
+         serverLocator.notifyNodeUp(System.currentTimeMillis(), targetNodeID, targetNode.getBackupGroupName(), targetNode.getScaleDownGroupName(),
+                                    new Pair<>(targetNode.getLive(), targetNode.getBackup()), false);
+         disconnectedAndDown = false;
+      }
       retryCount = 0;
       reconnectAttemptsInUse = reconnectAttempts;
       if (futureScheduledReconnection != null) {

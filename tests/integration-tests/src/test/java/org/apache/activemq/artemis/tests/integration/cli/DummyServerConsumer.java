@@ -46,6 +46,11 @@ public class DummyServerConsumer implements ServerConsumer {
    }
 
    @Override
+   public boolean allowReferenceCallback() {
+      return false;
+   }
+
+   @Override
    public Object getProtocolData() {
       return null;
    }
@@ -191,6 +196,11 @@ public class DummyServerConsumer implements ServerConsumer {
 
    @Override
    public Filter getFilter() {
+      return null;
+   }
+
+   @Override
+   public SimpleString getFilterString() {
       return null;
    }
 

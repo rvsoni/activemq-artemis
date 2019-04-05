@@ -31,7 +31,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
+import org.apache.activemq.artemis.api.core.ActiveMQShutdownException;
 import org.apache.activemq.artemis.core.io.IOCriticalErrorListener;
 import org.apache.activemq.artemis.core.io.SequentialFileFactory;
 import org.apache.activemq.artemis.core.journal.EncoderPersister;
@@ -249,7 +251,11 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
             logger.trace("JDBC commit worked");
          }
 
-         cleanupTxRecords(deletedRecords, committedTransactions);
+         if (cleanupTxRecords(deletedRecords, committedTransactions)) {
+            deleteJournalTxRecords.executeBatch();
+            connection.commit();
+            logger.trace("JDBC commit worked on cleanupTxRecords");
+         }
          executeCallbacks(recordRef, true);
 
          return recordRef.size();
@@ -289,7 +295,7 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
 
    /* We store Transaction reference in memory (once all records associated with a Tranascation are Deleted,
       we remove the Tx Records (i.e. PREPARE, COMMIT). */
-   private synchronized void cleanupTxRecords(List<Long> deletedRecords, List<Long> committedTx) throws SQLException {
+   private synchronized boolean cleanupTxRecords(List<Long> deletedRecords, List<Long> committedTx) throws SQLException {
       List<RecordInfo> iterableCopy;
       List<TransactionHolder> iterableCopyTx = new ArrayList<>();
       iterableCopyTx.addAll(transactions.values());
@@ -297,7 +303,7 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
       for (Long txId : committedTx) {
          transactions.get(txId).committed = true;
       }
-
+      boolean hasDeletedJournalTxRecords = false;
       // TODO (mtaylor) perhaps we could store a reverse mapping of IDs to prevent this O(n) loop
       for (TransactionHolder h : iterableCopyTx) {
 
@@ -313,9 +319,11 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
          if (h.recordInfos.isEmpty() && h.committed) {
             deleteJournalTxRecords.setLong(1, h.transactionID);
             deleteJournalTxRecords.addBatch();
+            hasDeletedJournalTxRecords = true;
             transactions.remove(h.transactionID);
          }
       }
+      return hasDeletedJournalTxRecords;
    }
 
    private void executeCallbacks(final List<JDBCJournalRecord> records, final boolean success) {
@@ -334,19 +342,19 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
    }
 
 
-   private void checkStatus() {
+   private void checkStatus() throws Exception {
       checkStatus(null);
    }
 
-   private void checkStatus(IOCompletion callback) {
+   private void checkStatus(IOCompletion callback) throws Exception {
       if (!started) {
          if (callback != null) callback.onError(-1, "JDBC Journal is not loaded");
-         throw new IllegalStateException("JDBCJournal is not loaded");
+         throw new ActiveMQShutdownException("JDBCJournal is not loaded");
       }
 
       if (failed.get()) {
          if (callback != null) callback.onError(-1, "JDBC Journal failed");
-         throw new IllegalStateException("JDBCJournal Failed");
+         throw new ActiveMQException("JDBCJournal Failed");
       }
    }
 
@@ -388,7 +396,7 @@ public class JDBCJournalImpl extends AbstractJDBCDriver implements Journal {
       if (callback != null) callback.waitCompletion();
    }
 
-   private synchronized void addTxRecord(JDBCJournalRecord record) {
+   private synchronized void addTxRecord(JDBCJournalRecord record) throws Exception {
 
       if (logger.isTraceEnabled()) {
          logger.trace("addTxRecord " + record + ", started=" + started + ", failed=" + failed);

@@ -16,9 +16,9 @@
  */
 package org.apache.activemq.artemis.core.client.impl;
 
+import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.api.core.client.ClientSession;
-import org.apache.activemq.artemis.api.core.RoutingType;
 
 public class QueueQueryImpl implements ClientSession.QueueQuery {
 
@@ -50,7 +50,28 @@ public class QueueQueryImpl implements ClientSession.QueueQuery {
 
    private final Boolean exclusive;
 
+   private final Boolean groupRebalance;
+
+   private final Integer groupBuckets;
+
    private final Boolean lastValue;
+
+   private final SimpleString lastValueKey;
+
+   private final Boolean nonDestructive;
+
+   private final Integer consumersBeforeDispatch;
+
+   private final Long delayBeforeDispatch;
+
+   private final Boolean autoDelete;
+
+   private final Long autoDeleteDelay;
+
+   private final Long autoDeleteMessageCount;
+
+
+   private final Integer defaultConsumerWindowSize;
 
    public QueueQueryImpl(final boolean durable,
                          final boolean temporary,
@@ -88,8 +109,9 @@ public class QueueQueryImpl implements ClientSession.QueueQuery {
                          final boolean autoCreated,
                          final boolean purgeOnNoConsumers,
                          final RoutingType routingType) {
-      this(durable, temporary, consumerCount, messageCount, filterString, address, name, exists, autoCreateQueues, maxConsumers, autoCreated, purgeOnNoConsumers, routingType, null, null);
+      this(durable, temporary, consumerCount, messageCount, filterString, address, name, exists, autoCreateQueues, maxConsumers, autoCreated, purgeOnNoConsumers, routingType, null, null, null);
    }
+
    public QueueQueryImpl(final boolean durable,
                          final boolean temporary,
                          final int consumerCount,
@@ -104,7 +126,36 @@ public class QueueQueryImpl implements ClientSession.QueueQuery {
                          final boolean purgeOnNoConsumers,
                          final RoutingType routingType,
                          final Boolean exclusive,
-                         final Boolean lastValue) {
+                         final Boolean lastValue,
+                         final Integer defaultConsumerWindowSize) {
+      this(durable, temporary, consumerCount, messageCount, filterString, address, name, exists, autoCreateQueues, maxConsumers, autoCreated, purgeOnNoConsumers, routingType, exclusive, null, null, lastValue, null, null, null, null, null, null, null, defaultConsumerWindowSize);
+   }
+
+   public QueueQueryImpl(final boolean durable,
+                         final boolean temporary,
+                         final int consumerCount,
+                         final long messageCount,
+                         final SimpleString filterString,
+                         final SimpleString address,
+                         final SimpleString name,
+                         final boolean exists,
+                         final boolean autoCreateQueues,
+                         final int maxConsumers,
+                         final boolean autoCreated,
+                         final boolean purgeOnNoConsumers,
+                         final RoutingType routingType,
+                         final Boolean exclusive,
+                         final Boolean groupRebalance,
+                         final Integer groupBuckets,
+                         final Boolean lastValue,
+                         final SimpleString lastValueKey,
+                         final Boolean nonDestructive,
+                         final Integer consumersBeforeDispatch,
+                         final Long delayBeforeDispatch,
+                         final Boolean autoDelete,
+                         final Long autoDeleteDelay,
+                         final Long autoDeleteMessageCount,
+                         final Integer defaultConsumerWindowSize) {
       this.durable = durable;
       this.temporary = temporary;
       this.consumerCount = consumerCount;
@@ -119,7 +170,17 @@ public class QueueQueryImpl implements ClientSession.QueueQuery {
       this.purgeOnNoConsumers = purgeOnNoConsumers;
       this.routingType = routingType;
       this.exclusive = exclusive;
+      this.groupRebalance = groupRebalance;
+      this.groupBuckets = groupBuckets;
       this.lastValue = lastValue;
+      this.lastValueKey = lastValueKey;
+      this.nonDestructive = nonDestructive;
+      this.consumersBeforeDispatch = consumersBeforeDispatch;
+      this.delayBeforeDispatch = delayBeforeDispatch;
+      this.autoDelete = autoDelete;
+      this.autoDeleteDelay = autoDeleteDelay;
+      this.autoDeleteMessageCount = autoDeleteMessageCount;
+      this.defaultConsumerWindowSize = defaultConsumerWindowSize;
    }
 
    @Override
@@ -197,5 +258,54 @@ public class QueueQueryImpl implements ClientSession.QueueQuery {
       return lastValue;
    }
 
+   @Override
+   public SimpleString getLastValueKey() {
+      return lastValueKey;
+   }
+
+   @Override
+   public Boolean isNonDestructive() {
+      return nonDestructive;
+   }
+
+   @Override
+   public Integer getConsumersBeforeDispatch() {
+      return consumersBeforeDispatch;
+   }
+
+   @Override
+   public Long getDelayBeforeDispatch() {
+      return delayBeforeDispatch;
+   }
+
+   @Override
+   public Integer getDefaultConsumerWindowSize() {
+      return defaultConsumerWindowSize;
+   }
+
+   @Override
+   public Boolean isGroupRebalance() {
+      return groupRebalance;
+   }
+
+   @Override
+   public Integer getGroupBuckets() {
+      return groupBuckets;
+   }
+
+   @Override
+   public Boolean isAutoDelete() {
+      return autoDelete;
+   }
+
+   @Override
+   public Long getAutoDeleteDelay() {
+      return autoDeleteDelay;
+   }
+
+   @Override
+   public Long getAutoDeleteMessageCount() {
+      return autoDeleteMessageCount;
+   }
 }
 

@@ -24,10 +24,11 @@ import java.util.Properties;
 import java.util.UUID;
 
 import org.apache.activemq.artemis.api.core.Pair;
+import org.apache.activemq.artemis.api.core.ParameterisedAddress;
 import org.apache.activemq.artemis.api.core.QueueAttributes;
 import org.apache.activemq.artemis.api.core.SimpleString;
+import org.apache.activemq.artemis.core.protocol.core.impl.PacketImpl;
 import org.apache.activemq.artemis.jndi.JNDIStorable;
-import org.apache.activemq.artemis.api.core.ParameterisedAddress;
 
 /**
  * ActiveMQ Artemis implementation of a JMS Destination.
@@ -51,6 +52,10 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
          return "";
       }
       return input.replace("\\", "\\\\").replace(".", "\\.");
+   }
+
+   protected void setName(String name) {
+      this.name = name;
    }
 
    /**
@@ -84,22 +89,78 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
    }
 
    public static Destination fromPrefixedName(final String name) {
-      if (name.startsWith(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX)) {
-         String address = name.substring(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX.length());
-         return createQueue(address);
-      } else if (name.startsWith(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX)) {
-         String address = name.substring(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX.length());
-         return createTopic(address);
-      } else if (name.startsWith(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX)) {
-         String address = name.substring(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX.length());
-         return new ActiveMQTemporaryQueue(address, null);
-      } else if (name.startsWith(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX)) {
-         String address = name.substring(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX.length());
-         return new ActiveMQTemporaryTopic(address, null);
-      } else {
-         return new ActiveMQDestination(name, TYPE.DESTINATION, null);
-      }
+      return fromPrefixedName(name, name);
    }
+
+   public static Destination fromPrefixedName(final String addr, final String name) {
+
+      ActiveMQDestination destination;
+      if (addr.startsWith(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX)) {
+         String address = addr.substring(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX.length());
+         destination = createQueue(address);
+      } else if (addr.startsWith(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX)) {
+         String address = addr.substring(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX.length());
+         destination = createTopic(address);
+      } else if (addr.startsWith(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX)) {
+         String address = addr.substring(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX.length());
+         destination = new ActiveMQTemporaryQueue(address, null);
+      } else if (addr.startsWith(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX)) {
+         String address = addr.substring(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX.length());
+         destination = new ActiveMQTemporaryTopic(address, null);
+      } else {
+         destination = new ActiveMQDestination(addr, TYPE.DESTINATION, null);
+      }
+
+      String unprefixedName = name;
+
+      if (name.startsWith(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX)) {
+         unprefixedName = name.substring(ActiveMQDestination.QUEUE_QUALIFIED_PREFIX.length());
+      } else if (name.startsWith(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX)) {
+         unprefixedName = name.substring(ActiveMQDestination.TOPIC_QUALIFIED_PREFIX.length());
+      } else if (name.startsWith(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX)) {
+         unprefixedName = name.substring(ActiveMQDestination.TEMP_QUEUE_QUALIFED_PREFIX.length());
+      } else if (name.startsWith(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX)) {
+         unprefixedName = name.substring(ActiveMQDestination.TEMP_TOPIC_QUALIFED_PREFIX.length());
+      }
+
+      destination.setName(unprefixedName);
+
+      return destination;
+   }
+
+   public static Destination fromPrefixed1XName(final String addr, final String name) {
+      ActiveMQDestination destination;
+      if (addr.startsWith(PacketImpl.OLD_QUEUE_PREFIX.toString())) {
+         destination = createQueue(addr);
+      } else if (addr.startsWith(PacketImpl.OLD_TOPIC_PREFIX.toString())) {
+         destination = createTopic(addr);
+      } else if (addr.startsWith(PacketImpl.OLD_TEMP_QUEUE_PREFIX.toString())) {
+         destination = new ActiveMQTemporaryQueue(addr, null);
+      } else if (addr.startsWith(PacketImpl.OLD_TEMP_TOPIC_PREFIX.toString())) {
+         destination = new ActiveMQTemporaryTopic(addr, null);
+      } else {
+         destination = new ActiveMQDestination(addr, TYPE.DESTINATION, null);
+      }
+
+      String unprefixedName = name;
+
+      if (name.startsWith(PacketImpl.OLD_QUEUE_PREFIX.toString())) {
+         unprefixedName = name.substring(PacketImpl.OLD_QUEUE_PREFIX.length());
+      } else if (name.startsWith(PacketImpl.OLD_TOPIC_PREFIX.toString())) {
+         unprefixedName = name.substring(PacketImpl.OLD_TOPIC_PREFIX.length());
+      } else if (name.startsWith(PacketImpl.OLD_TEMP_QUEUE_PREFIX.toString())) {
+         unprefixedName = name.substring(PacketImpl.OLD_TEMP_QUEUE_PREFIX.length());
+      } else if (name.startsWith(PacketImpl.OLD_TEMP_TOPIC_PREFIX.toString())) {
+         unprefixedName = name.substring(PacketImpl.OLD_TEMP_TOPIC_PREFIX.length());
+      }
+
+      destination.setName(unprefixedName);
+
+      return destination;
+   }
+
+
+
 
    public static SimpleString createQueueNameForSubscription(final boolean isDurable,
                                                        final String clientID,
@@ -236,6 +297,18 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
       return createTemporaryTopic(address, session);
    }
 
+   public static ActiveMQTemporaryQueue createTemporaryQueue(final ActiveMQSession session, final String prefix) {
+      String address = prefix + UUID.randomUUID().toString();
+
+      return createTemporaryQueue(address, session);
+   }
+
+   public static ActiveMQTemporaryTopic createTemporaryTopic(final ActiveMQSession session, final String prefix) {
+      String address = prefix + UUID.randomUUID().toString();
+
+      return createTemporaryTopic(address, session);
+   }
+
    public static ActiveMQTemporaryTopic createTemporaryTopic(String address, final ActiveMQSession session) {
       return new ActiveMQTemporaryTopic(address, session);
    }
@@ -262,10 +335,6 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
    @Deprecated
    private String address;
 
-   /**
-    * The "JMS" name of the destination. Needed for serialization backwards compatibility.
-    */
-   @Deprecated
    private String name;
 
    private final boolean temporary;
@@ -301,7 +370,6 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
       this.queue = TYPE.isQueue(type);
    }
 
-   @Deprecated
    protected ActiveMQDestination(final String address,
                                  final String name,
                                  final TYPE type,
@@ -325,6 +393,16 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
       setSimpleAddress(SimpleString.toSimpleString(address));
    }
 
+   @Override
+   public String toString() {
+      return "ActiveMQDestination [address=" + simpleAddress.toString() +
+         ", name=" +
+         name +
+         ", type =" +
+         thetype +
+         "]";
+   }
+
    public void setSimpleAddress(SimpleString address) {
       if (address == null) {
          throw new IllegalArgumentException("address cannot be null");
@@ -343,14 +421,19 @@ public class ActiveMQDestination extends JNDIStorable implements Destination, Se
 
    public void delete() throws JMSException {
       if (session != null) {
-         if (session.getCoreSession().isClosed()) {
-            // Temporary queues will be deleted when the connection is closed.. nothing to be done then!
-            return;
-         }
-         if (isQueue()) {
-            session.deleteTemporaryQueue(this);
-         } else {
-            session.deleteTemporaryTopic(this);
+         /**
+          * The status of the session used to create the temporary destination is uncertain, but the JMS spec states
+          * that the lifetime of the temporary destination is tied to the connection so even if the originating
+          * session is closed the temporary destination should still be deleted. Therefore, just create a new one
+          * and close it after the temporary destination is deleted. This is necessary because the Core API is
+          * predicated on having a Core ClientSession which is encapsulated by the JMS session implementation.
+          */
+         try (ActiveMQSession sessionToUse = (ActiveMQSession) session.getConnection().createSession()) {
+            if (isQueue()) {
+               sessionToUse.deleteTemporaryQueue(this);
+            } else {
+               sessionToUse.deleteTemporaryTopic(this);
+            }
          }
       }
    }

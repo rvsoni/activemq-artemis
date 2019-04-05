@@ -20,6 +20,7 @@ import java.io.Serializable;
 import java.util.Hashtable;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.client.ActiveMQClient;
 import org.apache.activemq.artemis.utils.PasswordMaskingUtil;
 
 /**
@@ -31,11 +32,10 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * Serial version UID
     */
    static final long serialVersionUID = -2772367477755473248L;
-   /**
-    * Trace enabled
-    */
-   private static boolean trace = ActiveMQRALogger.LOGGER.isTraceEnabled();
+
    protected boolean allowLocalTransactions;
+
+   protected boolean useTopologyForLoadBalancing = ActiveMQClient.DEFAULT_USE_TOPOLOGY_FOR_LOADBALANCING;
 
    /**
     * The user name
@@ -84,7 +84,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * Constructor
     */
    public ActiveMQRAProperties() {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("constructor()");
       }
    }
@@ -95,7 +95,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @return The value
     */
    public String getUserName() {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("getUserName()");
       }
 
@@ -108,7 +108,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @param userName The value
     */
    public void setUserName(final String userName) {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("setUserName(" + userName + ")");
       }
 
@@ -121,7 +121,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @return The value
     */
    public String getPassword() {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("getPassword()");
       }
 
@@ -139,7 +139,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @param password The value
     */
    public void setPassword(final String password) {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("setPassword(****)");
       }
 
@@ -177,7 +177,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @return The value
     */
    public Boolean getUseLocalTx() {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("getUseLocalTx()");
       }
 
@@ -190,7 +190,7 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
     * @param localTx The value
     */
    public void setUseLocalTx(final Boolean localTx) {
-      if (ActiveMQRAProperties.trace) {
+      if (ActiveMQRALogger.LOGGER.isTraceEnabled()) {
          ActiveMQRALogger.LOGGER.trace("setUseLocalTx(" + localTx + ")");
       }
 
@@ -248,6 +248,14 @@ public class ActiveMQRAProperties extends ConnectionFactoryProperties implements
       }
 
       initialized = true;
+   }
+
+   public void setUseTopologyForLoadBalancing(boolean useTopologyForLoadBalancing) {
+      this.useTopologyForLoadBalancing = useTopologyForLoadBalancing;
+   }
+
+   public boolean isUseTopologyForLoadBalancing() {
+      return useTopologyForLoadBalancing;
    }
 
    public String getCodec() {

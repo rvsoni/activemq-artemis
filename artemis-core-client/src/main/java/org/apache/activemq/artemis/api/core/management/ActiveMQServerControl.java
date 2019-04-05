@@ -581,6 +581,49 @@ public interface ActiveMQServerControl {
     * @param durable            is the queue durable?
     * @param maxConsumers       the maximum number of consumers allowed on this queue at any one time
     * @param purgeOnNoConsumers delete this queue when the last consumer disconnects
+    * @param exclusive if the queue should route exclusively to one consumer
+    * @param lastValue use last-value semantics
+    * @param consumersBeforeDispatch number of consumers needed before dispatch can start
+    * @param delayBeforeDispatch delay to wait before dispatching if number of consumers before dispatch is not met
+    * @param autoCreateAddress  create an address with default values should a matching address not be found
+    * @return a textual summary of the queue
+    * @throws Exception
+    */
+   @Operation(desc = "Create a queue", impact = MBeanOperationInfo.ACTION)
+   String createQueue(@Parameter(name = "address", desc = "Address of the queue") String address,
+                      @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
+                      @Parameter(name = "name", desc = "Name of the queue") String name,
+                      @Parameter(name = "filter", desc = "Filter of the queue") String filterStr,
+                      @Parameter(name = "durable", desc = "Is the queue durable?") boolean durable,
+                      @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") int maxConsumers,
+                      @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") boolean purgeOnNoConsumers,
+                      @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") boolean exclusive,
+                      @Parameter(name = "groupRebalance", desc = "If the queue should rebalance groups when a consumer is added") boolean groupRebalance,
+                      @Parameter(name = "groupBuckets", desc = "Number of buckets that should be used for message groups, -1 (default) is unlimited, and groups by raw key instead") int groupBuckets,
+                      @Parameter(name = "lastValue", desc = "Use last-value semantics") boolean lastValue,
+                      @Parameter(name = "lastValueKey", desc = "Use the specified property key for the last value") String lastValueKey,
+                      @Parameter(name = "nonDestructive", desc = "If the queue is non-destructive") boolean nonDestructive,
+                      @Parameter(name = "consumersBeforeDispatch", desc = "Number of consumers needed before dispatch can start") int consumersBeforeDispatch,
+                      @Parameter(name = "delayBeforeDispatch", desc = "Delay to wait before dispatching if number of consumers before dispatch is not met") long delayBeforeDispatch,
+                      @Parameter(name = "autoDelete", desc = "If the queue should be deleted once no consumers") boolean autoDelete,
+                      @Parameter(name = "autoDeleteDelay", desc = "How long to wait (in milliseconds) before deleting auto-created queues after the queue has 0 consumers") long autoDeleteDelay,
+                      @Parameter(name = "autoDeleteMessageCount", desc = "The message count the queue must be at or below before it can be evaluated to be auto deleted, 0 waits until empty queue (default) and -1 disables this check") long autoDeleteMessageCount,
+                      @Parameter(name = "autoCreateAddress", desc = "Create an address with default values should a matching address not be found") boolean autoCreateAddress) throws Exception;
+
+   /**
+    * Create a queue.
+    * <br>
+    * If {@code address} is {@code null} it will be defaulted to {@code name}.
+    * <br>
+    * This method throws a {@link org.apache.activemq.artemis.api.core.ActiveMQQueueExistsException}) exception if the queue already exits.
+    *
+    * @param address            address to bind the queue to
+    * @param routingType        the routing type used for this address, {@code MULTICAST} or {@code ANYCAST}
+    * @param name               name of the queue
+    * @param filterStr          filter of the queue
+    * @param durable            is the queue durable?
+    * @param maxConsumers       the maximum number of consumers allowed on this queue at any one time
+    * @param purgeOnNoConsumers delete this queue when the last consumer disconnects
     * @param autoCreateAddress  create an address with default values should a matching address not be found
     * @return a textual summary of the queue
     * @throws Exception
@@ -594,6 +637,7 @@ public interface ActiveMQServerControl {
                       @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") int maxConsumers,
                       @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") boolean purgeOnNoConsumers,
                       @Parameter(name = "autoCreateAddress", desc = "Create an address with default values should a matching address not be found") boolean autoCreateAddress) throws Exception;
+
 
    /**
     * Update a queue.
@@ -649,6 +693,35 @@ public interface ActiveMQServerControl {
                       @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") Integer maxConsumers,
                       @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") Boolean purgeOnNoConsumers,
                       @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive,
+                      @Parameter(name = "user", desc = "The user associated with this queue") String user) throws Exception;
+
+   /**
+    * Update a queue
+    *
+    * @param name               name of the queue
+    * @param routingType        the routing type used for this address, {@code MULTICAST} or {@code ANYCAST}
+    * @param maxConsumers       the maximum number of consumers allowed on this queue at any one time
+    * @param purgeOnNoConsumers delete this queue when the last consumer disconnects
+    * @param exclusive          if the queue should route exclusively to one consumer
+    * @param nonDestructive     If the queue is non-destructive
+    * @param consumersBeforeDispatch number of consumers needed before dispatch can start
+    * @param delayBeforeDispatch delay to wait before dispatching if number of consumers before dispatch is not met
+    * @param user               the user associated with this queue
+    * @return
+    * @throws Exception
+    */
+   @Operation(desc = "Update a queue", impact = MBeanOperationInfo.ACTION)
+   String updateQueue(@Parameter(name = "name", desc = "Name of the queue") String name,
+                      @Parameter(name = "routingType", desc = "The routing type used for this address, MULTICAST or ANYCAST") String routingType,
+                      @Parameter(name = "filter", desc = "The filter to use on the queue") String filter,
+                      @Parameter(name = "maxConsumers", desc = "The maximum number of consumers allowed on this queue at any one time") Integer maxConsumers,
+                      @Parameter(name = "purgeOnNoConsumers", desc = "Delete this queue when the last consumer disconnects") Boolean purgeOnNoConsumers,
+                      @Parameter(name = "exclusive", desc = "If the queue should route exclusively to one consumer") Boolean exclusive,
+                      @Parameter(name = "groupRebalance", desc = "If the queue should rebalance groups when a consumer is added") Boolean groupRebalance,
+                      @Parameter(name = "groupBuckets", desc = "Number of buckets that should be used for message groups, -1 (default) is unlimited, and groups by raw key instead") Integer groupBuckets,
+                      @Parameter(name = "nonDestructive", desc = "If the queue is non-destructive") Boolean nonDestructive,
+                      @Parameter(name = "consumersBeforeDispatch", desc = "Number of consumers needed before dispatch can start") Integer consumersBeforeDispatch,
+                      @Parameter(name = "delayBeforeDispatch", desc = "Delay to wait before dispatching if number of consumers before dispatch is not met") Long delayBeforeDispatch,
                       @Parameter(name = "user", desc = "The user associated with this queue") String user) throws Exception;
 
    /**
@@ -1269,5 +1342,56 @@ public interface ActiveMQServerControl {
     */
    @Operation(desc = "Names of the queues created on this server with the given routing-type (i.e. ANYCAST or MULTICAST)", impact = MBeanOperationInfo.INFO)
    String[] getQueueNames(@Parameter(name = "routingType", desc = "The routing type, MULTICAST or ANYCAST") String routingType);
+
+   /**
+    * Returns the names of the cluster-connections deployed on this server.
+    */
+   @Operation(desc = "Names of the cluster-connections deployed on this server", impact = MBeanOperationInfo.INFO)
+   String[] getClusterConnectionNames();
+
+   /**
+    * Add a user (only applicable when using the JAAS PropertiesLoginModule)
+    *
+    * @param username
+    * @param password
+    * @param roles
+    * @throws Exception
+    */
+   @Operation(desc = "add a user (only applicable when using the JAAS PropertiesLoginModule)", impact = MBeanOperationInfo.ACTION)
+   void addUser(@Parameter(name = "username", desc = "Name of the user") String username,
+                @Parameter(name = "password", desc = "User's password") String password,
+                @Parameter(name = "roles", desc = "User's role (comma separated)") String roles,
+                @Parameter(name = "plaintext", desc = "whether or not to store the password in plaintext or hash it") boolean plaintext) throws Exception;
+
+   /**
+    * List the information about a user or all users if no username is supplied (only applicable when using the JAAS PropertiesLoginModule).
+    *
+    * @param username
+    * @return JSON array of user & role information
+    * @throws Exception
+    */
+   @Operation(desc = "list info about a user or all users if no username is supplied (only applicable when using the JAAS PropertiesLoginModule)", impact = MBeanOperationInfo.ACTION)
+   String listUser(@Parameter(name = "username", desc = "Name of the user; leave null to list all known users") String username) throws Exception;
+
+   /**
+    * Remove a user (only applicable when using the JAAS PropertiesLoginModule).
+    *
+    * @param username
+    * @throws Exception
+    */
+   @Operation(desc = "remove a user (only applicable when using the JAAS PropertiesLoginModule)", impact = MBeanOperationInfo.ACTION)
+   void removeUser(@Parameter(name = "username", desc = "Name of the user") String username) throws Exception;
+   /**
+    * Set new properties on an existing user (only applicable when using the JAAS PropertiesLoginModule).
+    *
+    * @param username
+    * @param password
+    * @param roles
+    * @throws Exception
+    */
+   @Operation(desc = "set new properties on an existing user (only applicable when using the JAAS PropertiesLoginModule)", impact = MBeanOperationInfo.ACTION)
+   void resetUser(@Parameter(name = "username", desc = "Name of the user") String username,
+                  @Parameter(name = "password", desc = "User's password") String password,
+                  @Parameter(name = "roles", desc = "User's role (comma separated)") String roles) throws Exception;
 }
 

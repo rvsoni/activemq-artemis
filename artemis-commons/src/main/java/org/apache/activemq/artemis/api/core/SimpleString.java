@@ -179,6 +179,9 @@ public final class SimpleString implements CharSequence, Serializable, Comparabl
    }
 
    public static SimpleString readSimpleString(final ByteBuf buffer, final int length) {
+      if (length > buffer.readableBytes()) {
+         throw new IndexOutOfBoundsException("Error reading in simpleString, length=" + length + " is greater than readableBytes=" + buffer.readableBytes());
+      }
       byte[] data = new byte[length];
       buffer.readBytes(data);
       return new SimpleString(data);
@@ -339,7 +342,7 @@ public final class SimpleString implements CharSequence, Serializable, Comparabl
       byte high = (byte) (delim >> 8 & 0xFF); // high byte
 
       int lasPos = 0;
-      for (int i = 0; i < data.length; i += 2) {
+      for (int i = 0; i + 1 < data.length; i += 2) {
          if (data[i] == low && data[i + 1] == high) {
             byte[] bytes = new byte[i - lasPos];
             System.arraycopy(data, lasPos, bytes, 0, bytes.length);
@@ -436,7 +439,7 @@ public final class SimpleString implements CharSequence, Serializable, Comparabl
       final byte low = (byte) (c & 0xFF); // low byte
       final byte high = (byte) (c >> 8 & 0xFF); // high byte
 
-      for (int i = 0; i < data.length; i += 2) {
+      for (int i = 0; i + 1 < data.length; i += 2) {
          if (data[i] == low && data[i + 1] == high) {
             return true;
          }
@@ -451,7 +454,16 @@ public final class SimpleString implements CharSequence, Serializable, Comparabl
     * @return the concatenated SimpleString
     */
    public SimpleString concat(final String toAdd) {
-      return concat(new SimpleString(toAdd));
+      int len = toAdd.length();
+      byte[] bytes = new byte[data.length + len * 2];
+      System.arraycopy(data, 0, bytes, 0, data.length);
+      for (int i = 0; i < len; i++) {
+         char c = toAdd.charAt(i);
+         int offset = data.length + i * 2;
+         bytes[offset] = (byte) (c & 0xFF);
+         bytes[offset + 1] = (byte) (c >> 8 & 0xFF);
+      }
+      return new SimpleString(bytes);
    }
 
    /**

@@ -36,6 +36,16 @@ public interface CoreRemotingConnection extends RemotingConnection {
       return  (version > 0 && version < PacketImpl.ADDRESSING_CHANGE_VERSION);
    }
 
+   default boolean isVersionBeforeAsyncResponseChange() {
+      int version = getChannelVersion();
+      return  (version > 0 && version < PacketImpl.ASYNC_RESPONSE_CHANGE_VERSION);
+   }
+
+   default boolean isVersionSupportConsumerPriority() {
+      int version = getChannelVersion();
+      return  version >= PacketImpl.CONSUMER_PRIORITY_CHANGE_VERSION;
+   }
+
    /**
     * Sets the client protocol used on the communication. This will determine if the client has
     * support for certain packet types

@@ -153,14 +153,12 @@ a given property.)
 
   Messages can be expired from a queue by using the `expireMessages()` method.
   If an expiry address is defined, messages will be sent to it, otherwise they
-  are discarded. The queue's expiry address can be set with the
-  `setExpiryAddress()` method.
+  are discarded.
 
   Messages can also be sent to a dead letter address with the
   `sendMessagesToDeadLetterAddress()` method. It returns the number of messages
   which are sent to the dead letter address. If a dead letter address is not
-  defined, message are removed from the queue and discarded. The queue's dead
-  letter address can be set with the `setDeadLetterAddress()` method.
+  defined, message are removed from the queue and discarded.
 
   Messages can also be moved from a queue to another queue by using the
   `moveMessages()` method.
@@ -388,7 +386,7 @@ controlled via the `set*`, `get*` and `is*`.  The `*` access is the catch all
 for everything other method that isn't specifically matched.
 
 The `default-access` element is basically the catch all for every method call
-that isn't handled via the `role-access` configuration.  This has teh same
+that isn't handled via the `role-access` configuration.  This has the same
 semantics as a `match` element.
 
 > **Note:**
@@ -425,7 +423,13 @@ You can also configure the connector using the following:
 - `connector-port`
    
   The port to expose the agent on.
-   
+
+- `rmi-registry-port`
+
+  The port that the RMI registry binds to. If not set, the port is
+  always random. Set to avoid problems with remote JMX connections
+  tunnelled through firewall.
+
 - `jmx-realm`
    
   The jmx realm to use for authentication, defaults to `activemq` to match the
@@ -446,7 +450,7 @@ You can also configure the connector using the following:
    
 - `key-store-password`
    
-  The keystore password.
+  The keystore password. This can be [masked](masking-passwords.md).
    
 - `key-store-provider`
 
@@ -458,11 +462,17 @@ You can also configure the connector using the following:
    
 - `trust-store-password`
    
-  The trustore password.
+  The trustore password. This can be [masked](masking-passwords.md).
    
 - `trust-store-provider`
    
   The provider; `JKS` by default.
+
+- `password-codec`
+
+  The fully qualified class name of the password codec to use. See the
+  [password masking](masking-passwords.md) documentation for more details on
+  how this works.
 
 > **Note:**
 >
@@ -731,8 +741,8 @@ un-formatted result of a call to `java.lang.System.currentTimeMillis()`.
 - `CONSUMER_CREATED` (2)
 
   `_AMQ_Address`, `_AMQ_ClusterName`, `_AMQ_RoutingName`, `_AMQ_Distance`,
-  `_AMQ_ConsumerCount`, `_AMQ_User`, `_AMQ_RemoteAddress`,
-  `_AMQ_SessionName`, `_AMQ_FilterString`
+  `_AMQ_ConsumerCount`, `_AMQ_User`, `_AMQ_ValidatedUser`, `_AMQ_RemoteAddress`,
+  `_AMQ_SessionName`, `_AMQ_FilterString`, `_AMQ_CertSubjectDN`
 
 - `CONSUMER_CLOSED` (3)
 
@@ -742,7 +752,7 @@ un-formatted result of a call to `java.lang.System.currentTimeMillis()`.
 
 - `SECURITY_AUTHENTICATION_VIOLATION` (6)
 
-  `_AMQ_User`
+  `_AMQ_User`, `_AMQ_CertSubjectDN`, `_AMQ_RemoteAddress`
 
 - `SECURITY_PERMISSION_VIOLATION` (7)
 

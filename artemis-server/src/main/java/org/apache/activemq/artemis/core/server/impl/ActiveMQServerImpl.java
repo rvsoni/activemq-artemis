@@ -16,12 +16,14 @@
  */
 package org.apache.activemq.artemis.core.server.impl;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.management.MBeanServer;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.management.ManagementFactory;
+import java.net.URI;
 import java.net.URL;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
@@ -123,6 +125,7 @@ import org.apache.activemq.artemis.core.server.BindingQueryResult;
 import org.apache.activemq.artemis.core.server.Divert;
 import org.apache.activemq.artemis.core.server.JournalType;
 import org.apache.activemq.artemis.core.server.LargeServerMessage;
+import org.apache.activemq.artemis.core.server.LoggingConfigurationFileReloader;
 import org.apache.activemq.artemis.core.server.MemoryManager;
 import org.apache.activemq.artemis.core.server.NetworkHealthCheck;
 import org.apache.activemq.artemis.core.server.NodeManager;
@@ -139,6 +142,7 @@ import org.apache.activemq.artemis.core.server.ServiceRegistry;
 import org.apache.activemq.artemis.core.server.cluster.BackupManager;
 import org.apache.activemq.artemis.core.server.cluster.ClusterManager;
 import org.apache.activemq.artemis.core.server.cluster.ha.HAPolicy;
+import org.apache.activemq.artemis.core.config.FederationConfiguration;
 import org.apache.activemq.artemis.core.server.files.FileMoveManager;
 import org.apache.activemq.artemis.core.server.files.FileStoreMonitor;
 import org.apache.activemq.artemis.core.server.group.GroupingHandler;
@@ -149,7 +153,17 @@ import org.apache.activemq.artemis.core.server.impl.jdbc.JdbcNodeManager;
 import org.apache.activemq.artemis.core.server.management.ManagementService;
 import org.apache.activemq.artemis.core.server.management.impl.ManagementServiceImpl;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQPluginRunnable;
-import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBasePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBindingPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBridgePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerConnectionPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerConsumerPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerCriticalPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerMessagePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerQueuePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerSessionPlugin;
+import org.apache.activemq.artemis.core.server.federation.FederationManager;
 import org.apache.activemq.artemis.core.server.reload.ReloadCallback;
 import org.apache.activemq.artemis.core.server.reload.ReloadManager;
 import org.apache.activemq.artemis.core.server.reload.ReloadManagerImpl;
@@ -163,6 +177,7 @@ import org.apache.activemq.artemis.core.settings.impl.ResourceLimitSettings;
 import org.apache.activemq.artemis.core.transaction.ResourceManager;
 import org.apache.activemq.artemis.core.transaction.impl.ResourceManagerImpl;
 import org.apache.activemq.artemis.core.version.Version;
+import org.apache.activemq.artemis.logs.AuditLogger;
 import org.apache.activemq.artemis.spi.core.protocol.ProtocolManagerFactory;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.protocol.SessionCallback;
@@ -217,6 +232,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    private final ActiveMQSecurityManager securityManager;
 
    private final Configuration configuration;
+
+   private final AtomicBoolean configurationReloadDeployed;
 
    private MBeanServer mbeanServer;
 
@@ -323,6 +340,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
    private final ConcurrentMap<String, AtomicInteger> connectedClientIds = new ConcurrentHashMap();
 
+   private volatile FederationManager federationManager;
+
    private final ActiveMQComponent networkCheckMonitor = new ActiveMQComponent() {
       @Override
       public void start() throws Exception {
@@ -403,11 +422,18 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       this.configuration = configuration;
 
+      this.configurationReloadDeployed = new AtomicBoolean(true);
+
       this.mbeanServer = mbeanServer;
 
       this.securityManager = securityManager;
 
-      addressSettingsRepository = new HierarchicalObjectRepository<>(configuration.getWildcardConfiguration());
+      addressSettingsRepository = new HierarchicalObjectRepository<>(configuration.getWildcardConfiguration(), new HierarchicalObjectRepository.MatchModifier() {
+         @Override
+         public String modify(String input) {
+            return CompositeAddress.extractAddressName(input);
+         }
+      });
 
       addressSettingsRepository.setDefault(new AddressSettings());
 
@@ -473,6 +499,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       SERVER_STATE originalState = state;
       try {
          internalStart();
+      } catch (Throwable t) {
+         ActiveMQServerLogger.LOGGER.failedToStartServer(t);
       } finally {
          if (originalState == SERVER_STATE.STOPPED) {
             networkHealthCheck.setTimeUnit(TimeUnit.MILLISECONDS).setPeriod(configuration.getNetworkCheckPeriod()).
@@ -522,7 +550,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       try {
          checkJournalDirectory();
 
-         nodeManager = createNodeManager(configuration.getJournalLocation(), false);
+         nodeManager = createNodeManager(configuration.getNodeManagerLockLocation(), false);
 
          nodeManager.start();
 
@@ -655,7 +683,9 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          @Override
          public void run() {
             try {
-               callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.criticalFailure(criticalComponent) : null);
+               if (hasBrokerCriticalPlugins()) {
+                  callBrokerCriticalPlugins(plugin -> plugin.criticalFailure(criticalComponent));
+               }
             } catch (Throwable e) {
                logger.warn(e.getMessage(), e);
             }
@@ -729,7 +759,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       if (nodeManager != null) {
          nodeManager.stop();
       }
-      nodeManager = createNodeManager(configuration.getJournalLocation(), true);
+      nodeManager = createNodeManager(configuration.getNodeManagerLockLocation(), true);
    }
 
    @Override
@@ -820,43 +850,41 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          throw ActiveMQMessageBundle.BUNDLE.addressIsNull();
       }
 
-      CompositeAddress addressKey = new CompositeAddress(address.toString());
-      String realAddress = addressKey.isFqqn() ? addressKey.getAddress() : addressKey.getQueueName();
-      AddressSettings addressSettings = getAddressSettingsRepository().getMatch(realAddress);
+      SimpleString realAddress = CompositeAddress.extractAddressName(address);
+      AddressSettings addressSettings = getAddressSettingsRepository().getMatch(realAddress.toString());
 
       boolean autoCreateQeueus = addressSettings.isAutoCreateQueues();
       boolean autoCreateAddresses = addressSettings.isAutoCreateAddresses();
       boolean defaultPurgeOnNoConsumers = addressSettings.isDefaultPurgeOnNoConsumers();
       int defaultMaxConsumers = addressSettings.getDefaultMaxConsumers();
       boolean defaultExclusive = addressSettings.isDefaultExclusiveQueue();
-      boolean defaultLastValie = addressSettings.isDefaultLastValueQueue();
+      boolean defaultLastValue = addressSettings.isDefaultLastValueQueue();
+      SimpleString defaultLastValueKey = addressSettings.getDefaultLastValueKey();
+      boolean defaultNonDestructive = addressSettings.isDefaultNonDestructive();
+      int defaultConsumersBeforeDispatch = addressSettings.getDefaultConsumersBeforeDispatch();
+      long defaultDelayBeforeDispatch = addressSettings.getDefaultDelayBeforeDispatch();
 
       List<SimpleString> names = new ArrayList<>();
 
       // make an exception for the management address (see HORNETQ-29)
       ManagementService managementService = getManagementService();
-      SimpleString bindAddress = new SimpleString(realAddress);
       if (managementService != null) {
-         if (bindAddress.equals(managementService.getManagementAddress())) {
-            return new BindingQueryResult(true, null, names, autoCreateQeueus, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers, defaultExclusive, defaultLastValie);
+         if (realAddress.equals(managementService.getManagementAddress())) {
+            return new BindingQueryResult(true, null, names, autoCreateQeueus, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers, defaultExclusive, defaultLastValue, defaultLastValueKey, defaultNonDestructive, defaultConsumersBeforeDispatch, defaultDelayBeforeDispatch);
          }
       }
 
-      Bindings bindings = getPostOffice().getMatchingBindings(bindAddress);
+      Bindings bindings = getPostOffice().getMatchingBindings(realAddress);
 
       for (Binding binding : bindings.getBindings()) {
          if (binding.getType() == BindingType.LOCAL_QUEUE || binding.getType() == BindingType.REMOTE_QUEUE) {
-            if (addressKey.isFqqn()) {
-               names.add(new SimpleString(addressKey.getAddress()).concat(CompositeAddress.SEPARATOR).concat(binding.getUniqueName()));
-            } else {
-               names.add(binding.getUniqueName());
-            }
+            names.add(binding.getUniqueName());
          }
       }
 
-      AddressInfo info = getAddressInfo(bindAddress);
+      AddressInfo info = getAddressInfo(realAddress);
 
-      return new BindingQueryResult(info != null, info, names, autoCreateQeueus, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers, defaultExclusive, defaultLastValie);
+      return new BindingQueryResult(info != null, info, names, autoCreateQeueus, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers, defaultExclusive, defaultLastValue, defaultLastValueKey, defaultNonDestructive, defaultConsumersBeforeDispatch, defaultDelayBeforeDispatch);
    }
 
    @Override
@@ -865,15 +893,31 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          throw ActiveMQMessageBundle.BUNDLE.queueNameIsNull();
       }
 
-      boolean autoCreateQueues = getAddressSettingsRepository().getMatch(name.toString()).isAutoCreateQueues();
-      boolean defaultPurgeOnNoConsumers = getAddressSettingsRepository().getMatch(name.toString()).isDefaultPurgeOnNoConsumers();
-      int defaultMaxConsumers = getAddressSettingsRepository().getMatch(name.toString()).getDefaultMaxConsumers();
-      boolean defaultExclusiveQueue = getAddressSettingsRepository().getMatch(name.toString()).isDefaultExclusiveQueue();
-      boolean defaultLastValueQueue = getAddressSettingsRepository().getMatch(name.toString()).isDefaultLastValueQueue();
+      SimpleString realName = CompositeAddress.extractQueueName(name);
 
-      QueueQueryResult response;
+      final QueueQueryResult response;
 
-      Binding binding = getPostOffice().getBinding(name);
+      Binding binding = getPostOffice().getBinding(realName);
+
+      final SimpleString addressName = binding != null && binding.getType() == BindingType.LOCAL_QUEUE
+            ? binding.getAddress() : CompositeAddress.extractAddressName(name);
+
+      final AddressSettings addressSettings = getAddressSettingsRepository().getMatch(addressName.toString());
+
+      boolean autoCreateQueues = addressSettings.isAutoCreateQueues();
+      boolean defaultPurgeOnNoConsumers = addressSettings.isDefaultPurgeOnNoConsumers();
+      int defaultMaxConsumers = addressSettings.getDefaultMaxConsumers();
+      boolean defaultExclusiveQueue = addressSettings.isDefaultExclusiveQueue();
+      boolean defaultLastValueQueue = addressSettings.isDefaultLastValueQueue();
+      SimpleString defaultLastValueKey = addressSettings.getDefaultLastValueKey();
+      boolean defaultNonDestructive = addressSettings.isDefaultNonDestructive();
+      int defaultConsumersBeforeDispatch = addressSettings.getDefaultConsumersBeforeDispatch();
+      long defaultDelayBeforeDispatch = addressSettings.getDefaultDelayBeforeDispatch();
+      int defaultConsumerWindowSize = addressSettings.getDefaultConsumerWindowSize();
+      boolean defaultGroupRebalance = addressSettings.isDefaultGroupRebalance();
+      int defaultGroupBuckets = addressSettings.getDefaultGroupBuckets();
+      long autoDeleteQueuesDelay = addressSettings.getAutoDeleteQueuesDelay();
+      long autoDeleteQueuesMessageCount = addressSettings.getAutoDeleteQueuesMessageCount();
 
       SimpleString managementAddress = getManagementService() != null ? getManagementService().getManagementAddress() : null;
 
@@ -884,14 +928,12 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
          SimpleString filterString = filter == null ? null : filter.getFilterString();
 
-         response = new QueueQueryResult(name, binding.getAddress(), queue.isDurable(), queue.isTemporary(), filterString, queue.getConsumerCount(), queue.getMessageCount(), autoCreateQueues, true, queue.isAutoCreated(), queue.isPurgeOnNoConsumers(), queue.getRoutingType(), queue.getMaxConsumers(), queue.isExclusive(), queue.isLastValue());
-      } else if (name.equals(managementAddress)) {
+         response = new QueueQueryResult(realName, binding.getAddress(), queue.isDurable(), queue.isTemporary(), filterString, queue.getConsumerCount(), queue.getMessageCount(), autoCreateQueues, true, queue.isAutoCreated(), queue.isPurgeOnNoConsumers(), queue.getRoutingType(), queue.getMaxConsumers(), queue.isExclusive(), queue.isGroupRebalance(), queue.getGroupBuckets(), queue.isLastValue(), queue.getLastValueKey(), queue.isNonDestructive(), queue.getConsumersBeforeDispatch(), queue.getDelayBeforeDispatch(), queue.isAutoDelete(), queue.getAutoDeleteDelay(), queue.getAutoDeleteMessageCount(), defaultConsumerWindowSize);
+      } else if (realName.equals(managementAddress)) {
          // make an exception for the management address (see HORNETQ-29)
-         response = new QueueQueryResult(name, managementAddress, true, false, null, -1, -1, autoCreateQueues, true, false, false, RoutingType.MULTICAST, -1, false, false);
-      } else if (autoCreateQueues) {
-         response = new QueueQueryResult(name, name, true, false, null, 0, 0, true, false, false, defaultPurgeOnNoConsumers, RoutingType.MULTICAST, defaultMaxConsumers, defaultExclusiveQueue, defaultLastValueQueue);
+         response = new QueueQueryResult(realName, managementAddress, true, false, null, -1, -1, autoCreateQueues, true, false, false, RoutingType.MULTICAST, -1, false, false, null, null, null, null, null, null, null, null, null, defaultConsumerWindowSize);
       } else {
-         response = new QueueQueryResult(null, null, false, false, null, 0, 0, false, false, false, false, RoutingType.MULTICAST, 0, null, null);
+         response = new QueueQueryResult(realName, addressName, true, false, null, 0, 0, autoCreateQueues, false, false, defaultPurgeOnNoConsumers, RoutingType.MULTICAST, defaultMaxConsumers, defaultExclusiveQueue, defaultGroupRebalance, defaultGroupBuckets, defaultLastValueQueue, defaultLastValueKey, defaultNonDestructive, defaultConsumersBeforeDispatch, defaultDelayBeforeDispatch, isAutoDelete(false, addressSettings), autoDeleteQueuesDelay, autoDeleteQueuesMessageCount, defaultConsumerWindowSize);
       }
 
       return response;
@@ -903,18 +945,20 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          throw ActiveMQMessageBundle.BUNDLE.queueNameIsNull();
       }
 
-      AddressSettings addressSettings = getAddressSettingsRepository().getMatch(name.toString());
+      SimpleString realName = CompositeAddress.extractAddressName(name);
+
+      AddressSettings addressSettings = getAddressSettingsRepository().getMatch(realName.toString());
 
       boolean autoCreateAddresses = addressSettings.isAutoCreateAddresses();
       boolean defaultPurgeOnNoConsumers = addressSettings.isDefaultPurgeOnNoConsumers();
       int defaultMaxConsumers = addressSettings.getDefaultMaxConsumers();
 
-      AddressInfo addressInfo = postOffice.getAddressInfo(name);
+      AddressInfo addressInfo = postOffice.getAddressInfo(realName);
       AddressQueryResult response;
       if (addressInfo != null) {
          response = new AddressQueryResult(addressInfo.getName(), addressInfo.getRoutingTypes(), addressInfo.getId(), addressInfo.isAutoCreated(), true, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers);
       } else {
-         response = new AddressQueryResult(name, null, -1, false, false, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers);
+         response = new AddressQueryResult(realName, null, -1, false, false, autoCreateAddresses, defaultPurgeOnNoConsumers, defaultMaxConsumers);
       }
       return response;
    }
@@ -951,7 +995,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       }
    }
 
-   void stop(boolean failoverOnServerShutdown, final boolean criticalIOError, boolean restarting) {
+   public void stop(boolean failoverOnServerShutdown, final boolean criticalIOError, boolean restarting) {
       this.stop(failoverOnServerShutdown, criticalIOError, restarting, false);
    }
 
@@ -961,6 +1005,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
     * @param criticalIOError whether we have encountered an IO error with the journal etc
     */
    void stop(boolean failoverOnServerShutdown, final boolean criticalIOError, boolean restarting, boolean isShutdown) {
+
+      logger.debug("Stopping server");
 
       synchronized (this) {
          if (state == SERVER_STATE.STOPPED || state == SERVER_STATE.STOPPING) {
@@ -985,6 +1031,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
             managementService.removeNotificationListener(groupingHandler);
             stopComponent(groupingHandler);
          }
+         stopComponent(federationManager);
          stopComponent(clusterManager);
 
          if (remotingService != null) {
@@ -1110,8 +1157,6 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       sessions.clear();
 
-      activateCallbacks.clear();
-
       state = SERVER_STATE.STOPPED;
 
       activationLatch.setCount(1);
@@ -1152,7 +1197,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       for (ActiveMQComponent externalComponent : externalComponents) {
          try {
             if (externalComponent instanceof ServiceComponent) {
-               ((ServiceComponent)externalComponent).stop(isShutdown);
+               ((ServiceComponent)externalComponent).stop(isShutdown || criticalIOError);
             } else {
                externalComponent.stop();
             }
@@ -1403,6 +1448,11 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                                       final boolean autoCreateQueues,
                                       final OperationContext context,
                                       final Map<SimpleString, RoutingType> prefixes) throws Exception {
+
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.createCoreSession(this, name, username, "****", minLargeMessageSize, connection, autoCommitSends,
+                  autoCommitAcks, preAcknowledge, xa, defaultAddress, callback, autoCreateQueues, context, prefixes);
+      }
       String validatedUser = "";
 
       if (securityStore != null) {
@@ -1411,14 +1461,17 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       checkSessionLimit(validatedUser);
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.beforeCreateSession(name, username, minLargeMessageSize, connection,
-                                                                                  autoCommitSends, autoCommitAcks, preAcknowledge, xa, defaultAddress, callback, autoCreateQueues, context, prefixes) : null);
-
+      if (hasBrokerSessionPlugins()) {
+         callBrokerSessionPlugins(plugin -> plugin.beforeCreateSession(name, username, minLargeMessageSize, connection,
+                 autoCommitSends, autoCommitAcks, preAcknowledge, xa, defaultAddress, callback, autoCreateQueues, context, prefixes));
+      }
       final ServerSessionImpl session = internalCreateSession(name, username, password, validatedUser, minLargeMessageSize, connection, autoCommitSends, autoCommitAcks, preAcknowledge, xa, defaultAddress, callback, context, autoCreateQueues, prefixes);
 
       sessions.put(name, session);
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.afterCreateSession(session) : null);
+      if (hasBrokerSessionPlugins()) {
+         callBrokerSessionPlugins(plugin -> plugin.afterCreateSession(session));
+      }
 
       return session;
    }
@@ -1665,6 +1718,30 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    }
 
    @Override
+   public Queue createQueue(final SimpleString address,
+                            final RoutingType routingType,
+                            final SimpleString queueName,
+                            final SimpleString filter,
+                            final boolean durable,
+                            final boolean temporary,
+                            final int maxConsumers,
+                            final boolean purgeOnNoConsumers,
+                            final boolean exclusive,
+                            final boolean groupRebalance,
+                            final int groupBuckets,
+                            final boolean lastValue,
+                            final SimpleString lastValueKey,
+                            final boolean nonDestructive,
+                            final int consumersBeforeDispatch,
+                            final long delayBeforeDispatch,
+                            final boolean autoDelete,
+                            final long autoDeleteDelay,
+                            final long autoDeleteMessageCount,
+                            final boolean autoCreateAddress) throws Exception {
+      return createQueue(address, routingType, queueName, filter, null, durable, temporary, false, false, false, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, autoCreateAddress);
+   }
+
+   @Override
    @Deprecated
    public Queue createQueue(SimpleString address,
                             RoutingType routingType,
@@ -1683,21 +1760,38 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    @Override
    public Queue createQueue(AddressInfo addressInfo, SimpleString queueName, SimpleString filter, SimpleString user, boolean durable, boolean temporary, boolean autoCreated, Integer maxConsumers, Boolean purgeOnNoConsumers, boolean autoCreateAddress) throws Exception {
       AddressSettings as = getAddressSettingsRepository().getMatch(addressInfo == null ? queueName.toString() : addressInfo.getName().toString());
-      return createQueue(addressInfo, queueName, filter, user, durable, temporary, false, false, autoCreated, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(), as.isDefaultLastValueQueue(), autoCreateAddress);
+      return createQueue(addressInfo, queueName, filter, user, durable, temporary, false, false, autoCreated, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(),  as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), as.isDefaultLastValueQueue(), as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreateAddress, false);
    }
 
    @Override
    public Queue createQueue(AddressInfo addressInfo, SimpleString queueName, SimpleString filter, SimpleString user, boolean durable, boolean temporary, boolean autoCreated, Integer maxConsumers, Boolean purgeOnNoConsumers, Boolean exclusive, Boolean lastValue, boolean autoCreateAddress) throws Exception {
-      return createQueue(addressInfo, queueName, filter, user, durable, temporary, false, false, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, lastValue, autoCreateAddress);
+      AddressSettings as = getAddressSettingsRepository().getMatch(addressInfo == null ? queueName.toString() : addressInfo.getName().toString());
+      return createQueue(addressInfo, queueName, filter, user, durable, temporary, false, false, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive,  as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), lastValue, as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreateAddress, false);
    }
 
+   @Override
+   public Queue createQueue(AddressInfo addressInfo, SimpleString queueName, SimpleString filter, SimpleString user, boolean durable, boolean temporary, boolean autoCreated, Integer maxConsumers, Boolean purgeOnNoConsumers, Boolean exclusive, Boolean groupRebalance, Integer groupBuckets, Boolean lastValue, SimpleString lastValueKey, Boolean nonDestructive, Integer consumersBeforeDispatch, Long delayBeforeDispatch, Boolean autoDelete, Long autoDeleteDelay, Long autoDeleteMessageCount, boolean autoCreateAddress) throws Exception {
+      return createQueue(addressInfo, queueName, filter, user, durable, temporary, false, false, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, autoCreateAddress, false);
+   }
+
+   static boolean isAutoDelete(boolean autoCreated, AddressSettings addressSettings) {
+      return autoCreated ? addressSettings.isAutoDeleteQueues() : addressSettings.isAutoDeleteCreatedQueues();
+   }
 
    @Override
    public Queue createQueue(SimpleString address, RoutingType routingType, SimpleString queueName, SimpleString filter,
                      SimpleString user, boolean durable, boolean temporary, boolean ignoreIfExists, boolean transientQueue,
                      boolean autoCreated, int maxConsumers, boolean purgeOnNoConsumers, boolean autoCreateAddress) throws Exception {
       AddressSettings as = getAddressSettingsRepository().getMatch(address == null ? queueName.toString() : address.toString());
-      return createQueue(address, routingType, queueName, filter, user, durable, temporary, ignoreIfExists, transientQueue, autoCreated, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(), as.isDefaultLastValueQueue(), autoCreateAddress);
+      return createQueue(address, routingType, queueName, filter, user, durable, temporary, ignoreIfExists, transientQueue, autoCreated, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(), as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), as.isDefaultLastValueQueue(), as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreateAddress);
+   }
+
+   @Override
+   public Queue createQueue(SimpleString address, RoutingType routingType, SimpleString queueName, SimpleString filter,
+                            SimpleString user, boolean durable, boolean temporary, boolean ignoreIfExists, boolean transientQueue,
+                            boolean autoCreated, int maxConsumers, boolean purgeOnNoConsumers, boolean exclusive, boolean lastValue, boolean autoCreateAddress) throws Exception {
+      AddressSettings as = getAddressSettingsRepository().getMatch(address == null ? queueName.toString() : address.toString());
+      return createQueue(address, routingType, queueName, filter, user, durable, temporary, ignoreIfExists, transientQueue, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive,  as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), lastValue, as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreateAddress);
    }
 
 
@@ -1733,6 +1827,30 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                                  boolean purgeOnNoConsumers,
                                  boolean exclusive,
                                  boolean lastValue) throws Exception {
+      AddressSettings as = getAddressSettingsRepository().getMatch(address == null ? name.toString() : address.toString());
+      createSharedQueue(address, routingType, name, filterString, user, durable, maxConsumers, purgeOnNoConsumers, exclusive, as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), lastValue, as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), isAutoDelete(false, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount());
+   }
+
+   @Override
+   public void createSharedQueue(final SimpleString address,
+                                 RoutingType routingType,
+                                 final SimpleString name,
+                                 final SimpleString filterString,
+                                 final SimpleString user,
+                                 boolean durable,
+                                 int maxConsumers,
+                                 boolean purgeOnNoConsumers,
+                                 boolean exclusive,
+                                 boolean groupRebalance,
+                                 int groupBuckets,
+                                 boolean lastValue,
+                                 SimpleString lastValueKey,
+                                 boolean nonDestructive,
+                                 int consumersBeforeDispatch,
+                                 long delayBeforeDispatch,
+                                 boolean autoDelete,
+                                 long autoDeleteDelay,
+                                 long autoDeleteMessageCount) throws Exception {
       //force the old contract about address
       if (address == null) {
          throw new NullPointerException("address can't be null!");
@@ -1746,7 +1864,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          }
       }
 
-      final Queue queue = createQueue(address, routingType, name, filterString, user, durable, !durable, true, !durable, false, maxConsumers, purgeOnNoConsumers, exclusive, lastValue, true);
+      final Queue queue = createQueue(address, routingType, name, filterString, user, durable, !durable, true, !durable, false, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, true);
 
       if (!queue.getAddress().equals(address)) {
          throw ActiveMQMessageBundle.BUNDLE.queueSubscriptionBelongsToDifferentAddress(name);
@@ -1845,12 +1963,20 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                             final boolean checkConsumerCount,
                             final boolean removeConsumers,
                             final boolean autoDeleteAddress) throws Exception {
+      destroyQueue(queueName, session, checkConsumerCount, removeConsumers, autoDeleteAddress, false);
+   }
+
+   @Override
+   public void destroyQueue(final SimpleString queueName,
+                            final SecurityAuth session,
+                            final boolean checkConsumerCount,
+                            final boolean removeConsumers,
+                            final boolean autoDeleteAddress,
+                            final boolean checkMessageCount) throws Exception {
       if (postOffice == null) {
          return;
       }
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.beforeDestroyQueue(queueName, session, checkConsumerCount,
-                                                                                 removeConsumers, autoDeleteAddress) : null);
 
       addressSettingsRepository.clearCache();
 
@@ -1864,10 +1990,11 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       Queue queue = (Queue) binding.getBindable();
 
-      // This check is only valid if checkConsumerCount == true
-      if (checkConsumerCount && queue.getConsumerCount() != 0) {
-         throw ActiveMQMessageBundle.BUNDLE.cannotDeleteQueue(queue.getName(), queueName, binding.getClass().getName());
+      if (hasBrokerQueuePlugins()) {
+         callBrokerQueuePlugins(plugin -> plugin.beforeDestroyQueue(queueName, session, checkConsumerCount,
+               removeConsumers, autoDeleteAddress));
       }
+
 
       if (session != null) {
 
@@ -1879,13 +2006,28 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          }
       }
 
+      // This check is only valid if checkConsumerCount == true
+      if (checkConsumerCount && queue.getConsumerCount() != 0) {
+         throw ActiveMQMessageBundle.BUNDLE.cannotDeleteQueueWithConsumers(queue.getName(), queueName, binding.getClass().getName());
+      }
+
+      // This check is only valid if checkMessageCount == true
+      if (checkMessageCount && queue.getAutoDeleteMessageCount() != -1) {
+         long messageCount = queue.getMessageCount();
+         if (queue.getMessageCount() > queue.getAutoDeleteMessageCount()) {
+            throw ActiveMQMessageBundle.BUNDLE.cannotDeleteQueueWithMessages(queue.getName(), queueName, messageCount);
+         }
+      }
+
       queue.deleteQueue(removeConsumers);
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.afterDestroyQueue(queue, address, session, checkConsumerCount,
-                                                                                removeConsumers, autoDeleteAddress) : null);
+      if (hasBrokerQueuePlugins()) {
+         callBrokerQueuePlugins(plugin -> plugin.afterDestroyQueue(queue, address, session, checkConsumerCount,
+                 removeConsumers, autoDeleteAddress));
+      }
       AddressInfo addressInfo = getAddressInfo(address);
 
-      if (autoDeleteAddress && postOffice != null && addressInfo != null && addressInfo.isAutoCreated()) {
+      if (autoDeleteAddress && postOffice != null && addressInfo != null && addressInfo.isAutoCreated() && !isAddressBound(address.toString()) && addressSettingsRepository.getMatch(address.toString()).getAutoDeleteAddressesDelay() == 0) {
          try {
             removeAddressInfo(address, session);
          } catch (ActiveMQDeleteAddressException e) {
@@ -1959,32 +2101,126 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    }
 
    @Override
-   public void registerBrokerPlugins(final List<ActiveMQServerPlugin> plugins) {
+   public void registerBrokerPlugins(final List<ActiveMQServerBasePlugin> plugins) {
       configuration.registerBrokerPlugins(plugins);
       plugins.forEach(plugin -> plugin.registered(this));
    }
 
    @Override
-   public void registerBrokerPlugin(final ActiveMQServerPlugin plugin) {
+   public void registerBrokerPlugin(final ActiveMQServerBasePlugin plugin) {
       configuration.registerBrokerPlugin(plugin);
       plugin.registered(this);
    }
 
    @Override
-   public void unRegisterBrokerPlugin(final ActiveMQServerPlugin plugin) {
+   public void unRegisterBrokerPlugin(final ActiveMQServerBasePlugin plugin) {
       configuration.unRegisterBrokerPlugin(plugin);
       plugin.unregistered(this);
    }
 
    @Override
-   public List<ActiveMQServerPlugin> getBrokerPlugins() {
+   public List<ActiveMQServerBasePlugin> getBrokerPlugins() {
       return configuration.getBrokerPlugins();
    }
 
    @Override
+   public List<ActiveMQServerConnectionPlugin> getBrokerConnectionPlugins() {
+      return configuration.getBrokerConnectionPlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerSessionPlugin> getBrokerSessionPlugins() {
+      return configuration.getBrokerSessionPlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerConsumerPlugin> getBrokerConsumerPlugins() {
+      return configuration.getBrokerConsumerPlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerAddressPlugin> getBrokerAddressPlugins() {
+      return configuration.getBrokerAddressPlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerQueuePlugin> getBrokerQueuePlugins() {
+      return configuration.getBrokerQueuePlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerBindingPlugin> getBrokerBindingPlugins() {
+      return configuration.getBrokerBindingPlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerMessagePlugin> getBrokerMessagePlugins() {
+      return configuration.getBrokerMessagePlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerBridgePlugin> getBrokerBridgePlugins() {
+      return configuration.getBrokerBridgePlugins();
+   }
+
+   @Override
+   public List<ActiveMQServerCriticalPlugin> getBrokerCriticalPlugins() {
+      return configuration.getBrokerCriticalPlugins();
+   }
+
+   @Override
    public void callBrokerPlugins(final ActiveMQPluginRunnable pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerConnectionPlugins(final ActiveMQPluginRunnable<ActiveMQServerConnectionPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerConnectionPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerSessionPlugins(final ActiveMQPluginRunnable<ActiveMQServerSessionPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerSessionPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerConsumerPlugins(final ActiveMQPluginRunnable<ActiveMQServerConsumerPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerConsumerPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerAddressPlugins(final ActiveMQPluginRunnable<ActiveMQServerAddressPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerAddressPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerQueuePlugins(final ActiveMQPluginRunnable<ActiveMQServerQueuePlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerQueuePlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerBindingPlugins(final ActiveMQPluginRunnable<ActiveMQServerBindingPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerBindingPlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerMessagePlugins(final ActiveMQPluginRunnable<ActiveMQServerMessagePlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerMessagePlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerBridgePlugins(final ActiveMQPluginRunnable<ActiveMQServerBridgePlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerBridgePlugins(), pluginRun);
+   }
+
+   @Override
+   public void callBrokerCriticalPlugins(final ActiveMQPluginRunnable<ActiveMQServerCriticalPlugin> pluginRun) throws ActiveMQException {
+      callBrokerPlugins(getBrokerCriticalPlugins(), pluginRun);
+   }
+
+   private <P extends ActiveMQServerBasePlugin> void callBrokerPlugins(final List<P> plugins, final ActiveMQPluginRunnable<P> pluginRun) throws ActiveMQException {
       if (pluginRun != null) {
-         for (ActiveMQServerPlugin plugin : getBrokerPlugins()) {
+         for (P plugin : plugins) {
             try {
                pluginRun.run(plugin);
             } catch (Throwable e) {
@@ -2002,6 +2238,51 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    @Override
    public boolean hasBrokerPlugins() {
       return !getBrokerPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerConnectionPlugins() {
+      return !getBrokerConnectionPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerSessionPlugins() {
+      return !getBrokerSessionPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerConsumerPlugins() {
+      return !getBrokerConsumerPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerAddressPlugins() {
+      return !getBrokerAddressPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerQueuePlugins() {
+      return !getBrokerQueuePlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerBindingPlugins() {
+      return !getBrokerBindingPlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerMessagePlugins() {
+      return !getBrokerMessagePlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerBridgePlugins() {
+      return !getBrokerBridgePlugins().isEmpty();
+   }
+
+   @Override
+   public boolean hasBrokerCriticalPlugins() {
+      return !getBrokerCriticalPlugins().isEmpty();
    }
 
    @Override
@@ -2041,6 +2322,12 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    public ConnectorsService getConnectorsService() {
       return connectorsService;
    }
+
+   @Override
+   public FederationManager getFederationManager() {
+      return federationManager;
+   }
+
 
    @Override
    public void deployDivert(DivertConfiguration config) throws Exception {
@@ -2111,6 +2398,20 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    }
 
    @Override
+   public void deployFederation(FederationConfiguration config) throws Exception {
+      if (federationManager != null) {
+         federationManager.deploy(config);
+      }
+   }
+
+   @Override
+   public void undeployFederation(String name) throws Exception {
+      if (federationManager != null) {
+         federationManager.undeploy(name);
+      }
+   }
+
+   @Override
    public ServerSession getSessionByID(String sessionName) {
       return sessions.get(sessionName);
    }
@@ -2134,8 +2435,9 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       this.queueFactory = factory;
    }
 
-   protected PagingManager createPagingManager() throws Exception {
-      return new PagingManagerImpl(getPagingStoreFactory(), addressSettingsRepository, configuration.getGlobalMaxSize());
+   @Override
+   public PagingManager createPagingManager() throws Exception {
+      return new PagingManagerImpl(getPagingStoreFactory(), addressSettingsRepository, configuration.getGlobalMaxSize(), configuration.getManagementAddress());
    }
 
    protected PagingStoreFactory getPagingStoreFactory() throws Exception {
@@ -2306,14 +2608,18 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       pagingManager = createPagingManager();
 
       resourceManager = new ResourceManagerImpl((int) (configuration.getTransactionTimeout() / 1000), configuration.getTransactionTimeoutScanPeriod(), scheduledPool);
-      postOffice = new PostOfficeImpl(this, storageManager, pagingManager, queueFactory, managementService, configuration.getMessageExpiryScanPeriod(), configuration.getMessageExpiryThreadPriority(), configuration.getWildcardConfiguration(), configuration.getIDCacheSize(), configuration.isPersistIDCache(), addressSettingsRepository);
+      postOffice = new PostOfficeImpl(this, storageManager, pagingManager, queueFactory, managementService, configuration.getMessageExpiryScanPeriod(), configuration.getAddressQueueScanPeriod(), configuration.getWildcardConfiguration(), configuration.getIDCacheSize(), configuration.isPersistIDCache(), addressSettingsRepository);
 
       // This can't be created until node id is set
       clusterManager = new ClusterManager(executorFactory, this, postOffice, scheduledPool, managementService, configuration, nodeManager, haPolicy.isBackup());
 
+      federationManager = new FederationManager(this);
+
       backupManager = new BackupManager(this, executorFactory, scheduledPool, nodeManager, configuration, clusterManager);
 
       clusterManager.deploy();
+
+      federationManager.deploy();
 
       remotingService = new RemotingServiceImpl(clusterManager, configuration, this, managementService, scheduledPool, protocolManagerFactories, executorFactory.getExecutor(), serviceRegistry);
 
@@ -2355,6 +2661,15 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          reloadManager.addCallback(configuration.getConfigurationUrl(), new ConfigurationFileReloader());
       }
 
+      if (System.getProperty("logging.configuration") != null) {
+         try {
+            reloadManager.addCallback(new URI(System.getProperty("logging.configuration")).toURL(), new LoggingConfigurationFileReloader());
+         } catch (Exception e) {
+            // a syntax error with the logging system property shouldn't prevent the server from starting
+            ActiveMQServerLogger.LOGGER.problemAddingConfigReloadCallback(System.getProperty("logging.configuration"), e);
+         }
+      }
+
       if (hasBrokerPlugins()) {
          callBrokerPlugins(plugin -> plugin.registered(this));
       }
@@ -2376,6 +2691,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       JournalLoadInformation[] journalInfo = loadJournals();
 
+      removeExtraAddressStores();
+
       final ServerInfo dumper = new ServerInfo(this, pagingManager);
 
       long dumpInfoInterval = configuration.getServerDumpInterval();
@@ -2393,12 +2710,13 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       // Deploy predefined addresses
       deployAddressesFromConfiguration();
-
       // Deploy any predefined queues
       deployQueuesFromConfiguration();
-
       // Undeploy any addresses and queues not in config
       undeployAddressesAndQueueNotInConfiguration();
+
+      //deploy any reloaded config
+      deployReloadableConfigFromConfiguration();
 
       // We need to call this here, this gives any dependent server a chance to deploy its own addresses
       // this needs to be done before clustering is fully activated
@@ -2420,6 +2738,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          if (groupingHandler != null && groupingHandler instanceof LocalGroupingHandler) {
             clusterManager.start();
 
+            federationManager.start();
+
             groupingHandler.awaitBindings();
 
             remotingService.start();
@@ -2427,6 +2747,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
             remotingService.start();
 
             clusterManager.start();
+
+            federationManager.start();
          }
 
          if (nodeManager.getNodeId() == null) {
@@ -2435,6 +2757,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
          // We can only do this after everything is started otherwise we may get nasty races with expired messages
          postOffice.startExpiryScanner();
+
+         postOffice.startAddressQueueScanner();
       }
 
       if (configuration.getMaxDiskUsage() != -1) {
@@ -2483,13 +2807,13 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
    private void undeployAddressesAndQueueNotInConfiguration(Configuration configuration) throws Exception {
       Set<String> addressesInConfig = configuration.getAddressConfigurations().stream()
-         .map(CoreAddressConfiguration::getName)
-         .collect(Collectors.toSet());
+              .map(CoreAddressConfiguration::getName)
+              .collect(Collectors.toSet());
 
       Set<String> queuesInConfig = configuration.getAddressConfigurations().stream()
-         .map(CoreAddressConfiguration::getQueueConfigurations)
-         .flatMap(List::stream).map(CoreQueueConfiguration::getName)
-         .collect(Collectors.toSet());
+              .map(CoreAddressConfiguration::getQueueConfigurations)
+              .flatMap(List::stream).map(CoreQueueConfiguration::getName)
+              .collect(Collectors.toSet());
 
       for (SimpleString addressName : listAddressNames()) {
          AddressSettings addressSettings = getAddressSettingsRepository().getMatch(addressName.toString());
@@ -2517,7 +2841,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    }
 
    private List<Queue> listConfiguredQueues(SimpleString address) throws Exception {
-      return listQueues(address).stream().filter(queue -> !queue.isAutoCreated() && !queue.isInternalQueue()).collect(Collectors.toList());
+      return listQueues(address).stream().filter(queue -> queue.isConfigurationManaged()).collect(Collectors.toList());
    }
 
    private List<Queue> listQueues(SimpleString address) throws Exception {
@@ -2530,37 +2854,70 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
    private void deployAddressesFromConfiguration(Configuration configuration) throws Exception {
       for (CoreAddressConfiguration config : configuration.getAddressConfigurations()) {
-         AddressInfo info = new AddressInfo(SimpleString.toSimpleString(config.getName()), config.getRoutingTypes());
-         addOrUpdateAddressInfo(info);
-         deployQueuesFromListCoreQueueConfiguration(config.getQueueConfigurations());
+         try {
+            ActiveMQServerLogger.LOGGER.deployAddress(config.getName(), config.getRoutingTypes().toString());
+            SimpleString address = SimpleString.toSimpleString(config.getName());
+
+            AddressInfo tobe = new AddressInfo(address, config.getRoutingTypes());
+
+            //During this stage until all queues re-configured we combine the current (if exists) with to-be routing types to allow changes in queues
+            AddressInfo current = getAddressInfo(address);
+            AddressInfo merged = new AddressInfo(address, tobe.getRoutingType());
+            if (current != null) {
+               merged.getRoutingTypes().addAll(current.getRoutingTypes());
+            }
+            addOrUpdateAddressInfo(merged);
+
+            deployQueuesFromListCoreQueueConfiguration(config.getQueueConfigurations());
+
+            //Now all queues updated we apply the actual address info expected tobe.
+            addOrUpdateAddressInfo(tobe);
+         } catch (Exception e) {
+            ActiveMQServerLogger.LOGGER.problemDeployingAddress(config.getName(), e.getMessage());
+         }
       }
+   }
+
+   private AddressInfo mergedRoutingTypes(SimpleString address, AddressInfo... addressInfos) {
+      EnumSet<RoutingType> mergedRoutingTypes = EnumSet.noneOf(RoutingType.class);
+      for (AddressInfo addressInfo : addressInfos) {
+         if (addressInfo != null) {
+            mergedRoutingTypes.addAll(addressInfo.getRoutingTypes());
+         }
+      }
+      return new AddressInfo(address, mergedRoutingTypes);
    }
 
    private void deployQueuesFromListCoreQueueConfiguration(List<CoreQueueConfiguration> queues) throws Exception {
       for (CoreQueueConfiguration config : queues) {
-         SimpleString queueName = SimpleString.toSimpleString(config.getName());
-         ActiveMQServerLogger.LOGGER.deployQueue(config.getName(), config.getAddress());
-         AddressSettings as = addressSettingsRepository.getMatch(config.getAddress());
-         // determine if there is an address::queue match; update it if so
-         int maxConsumerAddressSetting = as.getDefaultMaxConsumers();
-         int maxConsumerQueueConfig = config.getMaxConsumers();
-         int maxConsumer = (config.isMaxConsumerConfigured()) ? maxConsumerQueueConfig : maxConsumerAddressSetting;
-         if (locateQueue(queueName) != null && locateQueue(queueName).getAddress().toString().equals(config.getAddress())) {
-            updateQueue(config.getName(), config.getRoutingType(), maxConsumer, config.getPurgeOnNoConsumers(),
-                        config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive(),
-                        config.getUser());
-         } else {
-            // if the address::queue doesn't exist then create it
-            try {
-               createQueue(SimpleString.toSimpleString(config.getAddress()), config.getRoutingType(),
-                           queueName, SimpleString.toSimpleString(config.getFilterString()), SimpleString.toSimpleString(config.getUser()),
-                           config.isDurable(),false,false,false,false,maxConsumer,config.getPurgeOnNoConsumers(),
-                           config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive(),
-                           config.isLastValue() == null ? as.isDefaultLastValueQueue() : config.isLastValue(), true);
-            } catch (ActiveMQQueueExistsException e) {
-               // the queue may exist on a *different* address
-               ActiveMQServerLogger.LOGGER.warn(e.getMessage());
+         try {
+            SimpleString queueName = SimpleString.toSimpleString(config.getName());
+            ActiveMQServerLogger.LOGGER.deployQueue(config.getName(), config.getAddress(), config.getRoutingType().toString());
+            AddressSettings as = addressSettingsRepository.getMatch(config.getAddress());
+            // determine if there is an address::queue match; update it if so
+            int maxConsumers = config.getMaxConsumers() == null ? as.getDefaultMaxConsumers() : config.getMaxConsumers();
+            boolean isExclusive = config.isExclusive() == null ? as.isDefaultExclusiveQueue() : config.isExclusive();
+            boolean groupRebalance = config.isGroupRebalance() == null ? as.isDefaultGroupRebalance() : config.isGroupRebalance();
+            int groupBuckets = config.getGroupBuckets() == null ? as.getDefaultGroupBuckets() : config.getGroupBuckets();
+            boolean isLastValue = config.isLastValue() == null ? as.isDefaultLastValueQueue() : config.isLastValue();
+            SimpleString lastValueKey = config.getLastValueKey() == null ? as.getDefaultLastValueKey() : SimpleString.toSimpleString(config.getLastValueKey());
+            boolean isNonDestructive = config.isNonDestructive() == null ? as.isDefaultNonDestructive() : config.isNonDestructive();
+            int consumersBeforeDispatch = config.getConsumersBeforeDispatch() == null ? as.getDefaultConsumersBeforeDispatch() : config.getConsumersBeforeDispatch();
+            long delayBeforeDispatch = config.getDelayBeforeDispatch() == null ? as.getDefaultDelayBeforeDispatch() : config.getDelayBeforeDispatch();
+
+            if (locateQueue(queueName) != null && locateQueue(queueName).getAddress().toString().equals(config.getAddress())) {
+               updateQueue(config.getName(), config.getRoutingType(), config.getFilterString(), maxConsumers, config.getPurgeOnNoConsumers(), isExclusive, groupRebalance, groupBuckets, isNonDestructive, consumersBeforeDispatch, delayBeforeDispatch, config.getUser(), true);
+            } else {
+               // if the address::queue doesn't exist then create it
+               try {
+                  createQueue(new AddressInfo(SimpleString.toSimpleString(config.getAddress())).addRoutingType(config.getRoutingType()), queueName, SimpleString.toSimpleString(config.getFilterString()), SimpleString.toSimpleString(config.getUser()), config.isDurable(), false, false, false, false, maxConsumers, config.getPurgeOnNoConsumers(), isExclusive, groupRebalance, groupBuckets, isLastValue, lastValueKey, isNonDestructive, consumersBeforeDispatch, delayBeforeDispatch, isAutoDelete(false, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), true, true);
+               } catch (ActiveMQQueueExistsException e) {
+                  // the queue may exist on a *different* address
+                  ActiveMQServerLogger.LOGGER.warn(e.getMessage());
+               }
             }
+         } catch (Exception e) {
+            ActiveMQServerLogger.LOGGER.problemDeployingQueue(config.getName(), e.getMessage());
          }
       }
    }
@@ -2588,6 +2945,8 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          addressSettingsRepository.addMatch(entry.getKey(), entry.getValue(), true);
       }
    }
+
+
 
    private JournalLoadInformation[] loadJournals() throws Exception {
       JournalLoader journalLoader = activation.createJournalLoader(postOffice, pagingManager, storageManager, queueFactory, nodeManager, managementService, groupingHandler, configuration, parentServer);
@@ -2742,14 +3101,30 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                             final int maxConsumers,
                             final boolean purgeOnNoConsumers,
                             final boolean exclusive,
+                            final boolean groupRebalance,
+                            final int groupBuckets,
                             final boolean lastValue,
-                            final boolean autoCreateAddress) throws Exception {
-      final QueueBinding binding = (QueueBinding) postOffice.getBinding(queueName);
+                            final SimpleString lastValueKey,
+                            final boolean nonDestructive,
+                            final int consumersBeforeDispatch,
+                            final long delayBeforeDispatch,
+                            final boolean autoDelete,
+                            final long autoDeleteDelay,
+                            final long autoDeleteMessageCount,
+                            final boolean autoCreateAddress,
+                            final boolean configurationManaged) throws Exception {
+      SimpleString realQueueName = CompositeAddress.extractQueueName(queueName);
+
+      if (realQueueName == null || realQueueName.length() == 0) {
+         throw ActiveMQMessageBundle.BUNDLE.invalidQueueName(queueName);
+      }
+
+      final QueueBinding binding = (QueueBinding) postOffice.getBinding(realQueueName);
       if (binding != null) {
          if (ignoreIfExists) {
             return binding.getQueue();
          } else {
-            throw ActiveMQMessageBundle.BUNDLE.queueAlreadyExists(queueName, binding.getAddress());
+            throw ActiveMQMessageBundle.BUNDLE.queueAlreadyExists(realQueueName, binding.getAddress());
          }
       }
 
@@ -2760,9 +3135,9 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       final QueueConfig.Builder queueConfigBuilder;
 
-      final SimpleString addressToUse = addrInfo == null ? queueName : addrInfo.getName();
+      final SimpleString addressToUse = (addrInfo == null || addrInfo.getName() == null) ? realQueueName : addrInfo.getName();
 
-      queueConfigBuilder = QueueConfig.builderWith(queueID, queueName, addressToUse);
+      queueConfigBuilder = QueueConfig.builderWith(queueID, realQueueName, addressToUse);
 
       AddressInfo info = postOffice.getAddressInfo(addressToUse);
 
@@ -2785,9 +3160,33 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          throw ActiveMQMessageBundle.BUNDLE.invalidRoutingTypeForAddress(rt, info.getName().toString(), info.getRoutingTypes());
       }
 
-      final QueueConfig queueConfig = queueConfigBuilder.filter(filter).pagingManager(pagingManager).user(user).durable(durable).temporary(temporary).autoCreated(autoCreated).routingType(rt).maxConsumers(maxConsumers).purgeOnNoConsumers(purgeOnNoConsumers).exclusive(exclusive).lastValue(lastValue).build();
+      final QueueConfig queueConfig = queueConfigBuilder
+              .filter(filter)
+              .pagingManager(pagingManager)
+              .user(user)
+              .durable(durable)
+              .temporary(temporary)
+              .autoCreated(autoCreated)
+              .routingType(rt)
+              .maxConsumers(maxConsumers)
+              .purgeOnNoConsumers(purgeOnNoConsumers)
+              .exclusive(exclusive)
+              .groupRebalance(groupRebalance)
+              .groupBuckets(groupBuckets)
+              .lastValue(lastValue)
+              .lastValueKey(lastValueKey)
+              .nonDestructive(nonDestructive)
+              .consumersBeforeDispatch(consumersBeforeDispatch)
+              .delayBeforeDispatch(delayBeforeDispatch)
+              .autoDelete(autoDelete)
+              .autoDeleteDelay(autoDeleteDelay)
+              .autoDeleteMessageCount(autoDeleteMessageCount)
+              .configurationManaged(configurationManaged)
+              .build();
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.beforeCreateQueue(queueConfig) : null);
+      if (hasBrokerQueuePlugins()) {
+         callBrokerQueuePlugins(plugin -> plugin.beforeCreateQueue(queueConfig));
+      }
 
       final Queue queue = queueFactory.createQueueWith(queueConfig);
 
@@ -2831,7 +3230,9 @@ public class ActiveMQServerImpl implements ActiveMQServer {
          managementService.registerQueue(queue, queue.getAddress(), storageManager);
       }
 
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.afterCreateQueue(queue) : null);
+      if (hasBrokerQueuePlugins()) {
+         callBrokerQueuePlugins(plugin -> plugin.afterCreateQueue(queue));
+      }
 
       callPostQueueCreationCallbacks(queue.getName());
 
@@ -2852,97 +3253,18 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                             final int maxConsumers,
                             final boolean purgeOnNoConsumers,
                             final boolean exclusive,
+                            final boolean groupRebalance,
+                            final int groupBuckets,
                             final boolean lastValue,
+                            final SimpleString lastValueKey,
+                            final boolean nonDestructive,
+                            final int consumersBeforeDispatch,
+                            final long delayBeforeDispatch,
+                            final boolean autoDelete,
+                            final long autoDeleteDelay,
+                            final long autoDeleteMessageCount,
                             final boolean autoCreateAddress) throws Exception {
-
-      final QueueBinding binding = (QueueBinding) postOffice.getBinding(queueName);
-      if (binding != null) {
-         if (ignoreIfExists) {
-            return binding.getQueue();
-         } else {
-            throw ActiveMQMessageBundle.BUNDLE.queueAlreadyExists(queueName, binding.getAddress());
-         }
-      }
-
-      final Filter filter = FilterImpl.createFilter(filterString);
-
-      final long txID = storageManager.generateID();
-      final long queueID = storageManager.generateID();
-
-      final QueueConfig.Builder queueConfigBuilder;
-
-      final SimpleString addressToUse = address == null ? queueName : address;
-
-      queueConfigBuilder = QueueConfig.builderWith(queueID, queueName, addressToUse);
-
-      AddressInfo info = postOffice.getAddressInfo(addressToUse);
-
-      if (autoCreateAddress) {
-         RoutingType rt = (routingType == null ? ActiveMQDefaultConfiguration.getDefaultRoutingType() : routingType);
-         if (info == null) {
-            final AddressInfo addressInfo = new AddressInfo(addressToUse, rt);
-            addressInfo.setAutoCreated(true);
-            addAddressInfo(addressInfo);
-         } else if (!info.getRoutingTypes().contains(routingType)) {
-            EnumSet<RoutingType> routingTypes = EnumSet.copyOf(info.getRoutingTypes());
-            routingTypes.add(routingType);
-            updateAddressInfo(info.getName(), routingTypes);
-         }
-      } else if (info == null) {
-         throw ActiveMQMessageBundle.BUNDLE.addressDoesNotExist(addressToUse);
-      } else if (!info.getRoutingTypes().contains(routingType)) {
-         throw ActiveMQMessageBundle.BUNDLE.invalidRoutingTypeForAddress(routingType, info.getName().toString(), info.getRoutingTypes());
-      }
-
-      final QueueConfig queueConfig = queueConfigBuilder.filter(filter).pagingManager(pagingManager).user(user).durable(durable).temporary(temporary).autoCreated(autoCreated).routingType(routingType).maxConsumers(maxConsumers).purgeOnNoConsumers(purgeOnNoConsumers).exclusive(exclusive).lastValue(lastValue).build();
-
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.beforeCreateQueue(queueConfig) : null);
-
-      final Queue queue = queueFactory.createQueueWith(queueConfig);
-
-      if (transientQueue) {
-         queue.setConsumersRefCount(new TransientQueueManagerImpl(this, queue.getName()));
-      } else {
-         queue.setConsumersRefCount(new QueueManagerImpl(this, queue.getName()));
-      }
-
-      final QueueBinding localQueueBinding = new LocalQueueBinding(queue.getAddress(), queue, nodeManager.getNodeId());
-
-      if (queue.isDurable()) {
-         storageManager.addQueueBinding(txID, localQueueBinding);
-      }
-
-      try {
-         postOffice.addBinding(localQueueBinding);
-         if (queue.isDurable()) {
-            storageManager.commitBindings(txID);
-         }
-      } catch (Exception e) {
-         try {
-            if (durable) {
-               storageManager.rollbackBindings(txID);
-            }
-            final PageSubscription pageSubscription = queue.getPageSubscription();
-            try {
-               queue.close();
-            } finally {
-               if (pageSubscription != null) {
-                  pageSubscription.destroy();
-               }
-            }
-         } catch (Throwable ignored) {
-            logger.debug(ignored.getMessage(), ignored);
-         }
-         throw e;
-      }
-
-      managementService.registerQueue(queue, queue.getAddress(), storageManager);
-
-      callBrokerPlugins(hasBrokerPlugins() ? plugin -> plugin.afterCreateQueue(queue) : null);
-
-      callPostQueueCreationCallbacks(queue.getName());
-
-      return queue;
+      return createQueue(new AddressInfo(address).addRoutingType(routingType), queueName, filterString, user, durable, temporary, ignoreIfExists, transientQueue, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, autoCreateAddress, false);
    }
 
    @Deprecated
@@ -2964,6 +3286,7 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       return updateQueue(name, routingType, maxConsumers, purgeOnNoConsumers, null, null);
    }
 
+   @Deprecated
    @Override
    public Queue updateQueue(String name,
                             RoutingType routingType,
@@ -2971,7 +3294,40 @@ public class ActiveMQServerImpl implements ActiveMQServer {
                             Boolean purgeOnNoConsumers,
                             Boolean exclusive,
                             String user) throws Exception {
-      final QueueBinding queueBinding = this.postOffice.updateQueue(new SimpleString(name), routingType, maxConsumers, purgeOnNoConsumers, exclusive, SimpleString.toSimpleString(user));
+      return updateQueue(name, routingType, null, maxConsumers, purgeOnNoConsumers, exclusive, null, null, null, null, null, user);
+   }
+
+   @Override
+   public Queue updateQueue(String name,
+                            RoutingType routingType,
+                            String filterString,
+                            Integer maxConsumers,
+                            Boolean purgeOnNoConsumers,
+                            Boolean exclusive,
+                            Boolean groupRebalance,
+                            Integer groupBuckets,
+                            Boolean nonDestructive,
+                            Integer consumersBeforeDispatch,
+                            Long delayBeforeDispatch,
+                            String user) throws Exception {
+      return updateQueue(name, routingType, filterString, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, user, null);
+   }
+
+   private Queue updateQueue(String name,
+                            RoutingType routingType,
+                            String filterString,
+                            Integer maxConsumers,
+                            Boolean purgeOnNoConsumers,
+                            Boolean exclusive,
+                            Boolean groupRebalance,
+                            Integer groupBuckets,
+                            Boolean nonDestructive,
+                            Integer consumersBeforeDispatch,
+                            Long delayBeforeDispatch,
+                            String user,
+                            Boolean configurationManaged) throws Exception {
+      final Filter filter = FilterImpl.createFilter(filterString);
+      final QueueBinding queueBinding = this.postOffice.updateQueue(new SimpleString(name), routingType, filter, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, SimpleString.toSimpleString(user), configurationManaged);
       if (queueBinding != null) {
          final Queue queue = queueBinding.getQueue();
          return queue;
@@ -3012,6 +3368,13 @@ public class ActiveMQServerImpl implements ActiveMQServer {
             journalDir.mkdirs();
          } else {
             throw ActiveMQMessageBundle.BUNDLE.cannotCreateDir(journalDir.getAbsolutePath());
+         }
+      }
+
+      File nodeManagerLockDir = configuration.getNodeManagerLockLocation();
+      if (!journalDir.equals(nodeManagerLockDir)) {
+         if (configuration.isPersistenceEnabled() && !nodeManagerLockDir.exists()) {
+            nodeManagerLockDir.mkdirs();
          }
       }
    }
@@ -3125,6 +3488,17 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       }
    }
 
+   private void removeExtraAddressStores() throws Exception {
+      SimpleString[] storeNames = pagingManager.getStoreNames();
+      if (storeNames != null && storeNames.length > 0) {
+         for (SimpleString storeName : storeNames) {
+            if (getAddressInfo(storeName) == null) {
+               pagingManager.deletePageStore(storeName);
+            }
+         }
+      }
+   }
+
    private final class ActivationThread extends Thread {
 
       final Runnable runnable;
@@ -3150,32 +3524,40 @@ public class ActiveMQServerImpl implements ActiveMQServer {
 
       @Override
       public void reload(URL uri) throws Exception {
+         Configuration config = new FileConfigurationParser().parseMainConfig(uri.openStream());
+         LegacyJMSConfiguration legacyJMSConfiguration = new LegacyJMSConfiguration(config);
+         legacyJMSConfiguration.parseConfiguration(uri.openStream());
+         configuration.setSecurityRoles(config.getSecurityRoles());
+         configuration.setAddressesSettings(config.getAddressesSettings());
+         configuration.setDivertConfigurations(config.getDivertConfigurations());
+         configuration.setAddressConfigurations(config.getAddressConfigurations());
+         configuration.setQueueConfigurations(config.getQueueConfigurations());
+         configurationReloadDeployed.set(false);
          if (isActive()) {
-            Configuration config = new FileConfigurationParser().parseMainConfig(uri.openStream());
-            LegacyJMSConfiguration legacyJMSConfiguration = new LegacyJMSConfiguration(config);
-            legacyJMSConfiguration.parseConfiguration(uri.openStream());
-
-            ActiveMQServerLogger.LOGGER.reloadingConfiguration("security");
-            securityRepository.swap(config.getSecurityRoles().entrySet());
-            configuration.setSecurityRoles(config.getSecurityRoles());
-
-            ActiveMQServerLogger.LOGGER.reloadingConfiguration("address settings");
-            addressSettingsRepository.swap(config.getAddressesSettings().entrySet());
-            configuration.setAddressesSettings(config.getAddressesSettings());
-
-            ActiveMQServerLogger.LOGGER.reloadingConfiguration("diverts");
-            for (DivertConfiguration divertConfig : config.getDivertConfigurations()) {
-               if (postOffice.getBinding(new SimpleString(divertConfig.getName())) == null) {
-                  deployDivert(divertConfig);
-               }
-            }
-
-            ActiveMQServerLogger.LOGGER.reloadingConfiguration("addresses");
-            deployAddressesFromConfiguration(config);
-            undeployAddressesAndQueueNotInConfiguration(config);
-            configuration.setAddressConfigurations(config.getAddressConfigurations());
-            configuration.setQueueConfigurations(config.getQueueConfigurations());
+            deployReloadableConfigFromConfiguration();
          }
+      }
+   }
+
+   private void deployReloadableConfigFromConfiguration() throws Exception {
+      if (configurationReloadDeployed.compareAndSet(false, true)) {
+         ActiveMQServerLogger.LOGGER.reloadingConfiguration("security");
+         securityRepository.swap(configuration.getSecurityRoles().entrySet());
+
+         ActiveMQServerLogger.LOGGER.reloadingConfiguration("address settings");
+         addressSettingsRepository.swap(configuration.getAddressesSettings().entrySet());
+
+         ActiveMQServerLogger.LOGGER.reloadingConfiguration("diverts");
+         for (DivertConfiguration divertConfig : configuration.getDivertConfigurations()) {
+            if (postOffice.getBinding(new SimpleString(divertConfig.getName())) == null) {
+               deployDivert(divertConfig);
+            }
+         }
+
+         ActiveMQServerLogger.LOGGER.reloadingConfiguration("addresses");
+         undeployAddressesAndQueueNotInConfiguration(configuration);
+         deployAddressesFromConfiguration(configuration);
+         deployQueuesFromListCoreQueueConfiguration(configuration.getQueueConfigurations());
       }
    }
 
@@ -3187,4 +3569,5 @@ public class ActiveMQServerImpl implements ActiveMQServer {
    public List<ActiveMQComponent> getExternalComponents() {
       return externalComponents;
    }
+
 }

@@ -546,6 +546,17 @@ users=system,user
 guests=guest
 ```
 
+As mentioned above, the Artemis command-line interface supports a command to
+`add` a user. Commands to `list` (one or all) users, `remove` a user, and `reset`
+a user's password and/or role(s) are also supported via the command-line
+interface as well as the normal management interfaces (e.g. JMX, web console,
+etc.).
+
+> **Warning**
+>
+> Management and CLI operations to manipulate user & role data are only available
+> when using the `PropertiesLoginModule`.
+
 #### LDAPLoginModule
 
 The LDAP login module enables you to perform authentication and authorization
@@ -920,7 +931,7 @@ The `GSSAPI` SASL mechanism must be enabled  on the AMQP acceptor in
 ```
 
 The GSSAPI mechanism implementation on the server will use a JAAS configuration
-scope named `amqp-sasl-gssapi` to obtain it's Kerberos acceptor credentials. An
+scope named `amqp-sasl-gssapi` to obtain its Kerberos acceptor credentials. An
 alternative configuration scope can be specified on the AMQP acceptor using the
 url parameter: `saslLoginConfigScope=<some other scope>`.
 

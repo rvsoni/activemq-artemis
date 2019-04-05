@@ -37,15 +37,25 @@ public class CoreQueueConfiguration implements Serializable {
 
    private Boolean exclusive;
 
+   private Boolean groupRebalance;
+
+   private Integer groupBuckets;
+
    private Boolean lastValue;
 
-   private Integer maxConsumers = ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers();
+   private String lastValueKey;
+
+   private Boolean nonDestructive;
+
+   private Integer maxConsumers;
+
+   private Integer consumersBeforeDispatch;
+
+   private Long delayBeforeDispatch;
 
    private Boolean purgeOnNoConsumers = ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers();
 
    private RoutingType routingType = ActiveMQDefaultConfiguration.getDefaultRoutingType();
-
-   private boolean maxConsumerConfigured = false;
 
    public CoreQueueConfiguration() {
    }
@@ -74,17 +84,32 @@ public class CoreQueueConfiguration implements Serializable {
       return exclusive;
    }
 
+   public Boolean isGroupRebalance() {
+      return groupRebalance;
+   }
+
+   public Integer getGroupBuckets() {
+      return groupBuckets;
+   }
+
    public Boolean isLastValue() {
       return lastValue;
    }
 
-   public boolean isMaxConsumerConfigured() {
-      return maxConsumerConfigured;
+   public String getLastValueKey() {
+      return lastValueKey;
    }
 
-   public CoreQueueConfiguration setMaxConsumerConfigured(boolean maxConsumerConfigured) {
-      this.maxConsumerConfigured = maxConsumerConfigured;
-      return this;
+   public Boolean isNonDestructive() {
+      return nonDestructive;
+   }
+
+   public Integer getConsumersBeforeDispatch() {
+      return consumersBeforeDispatch;
+   }
+
+   public Long getDelayBeforeDispatch() {
+      return delayBeforeDispatch;
    }
 
    /**
@@ -128,6 +153,22 @@ public class CoreQueueConfiguration implements Serializable {
    }
 
    /**
+    * @param consumersBeforeDispatch for this queue, default is 0 (dispatch as soon as 1 consumer)
+    */
+   public CoreQueueConfiguration setConsumersBeforeDispatch(Integer consumersBeforeDispatch) {
+      this.consumersBeforeDispatch = consumersBeforeDispatch;
+      return this;
+   }
+
+   /**
+    * @param delayBeforeDispatch for this queue, default is 0 (start dispatch with no delay)
+    */
+   public CoreQueueConfiguration setDelayBeforeDispatch(Long delayBeforeDispatch) {
+      this.delayBeforeDispatch = delayBeforeDispatch;
+      return this;
+   }
+
+   /**
     * @param purgeOnNoConsumers delete this queue when consumer count reaches 0, default is false
     */
    public CoreQueueConfiguration setPurgeOnNoConsumers(Boolean purgeOnNoConsumers) {
@@ -148,8 +189,28 @@ public class CoreQueueConfiguration implements Serializable {
       return this;
    }
 
+   public CoreQueueConfiguration setGroupRebalance(Boolean groupRebalance) {
+      this.groupRebalance = groupRebalance;
+      return this;
+   }
+
+   public CoreQueueConfiguration setGroupBuckets(Integer groupBuckets) {
+      this.groupBuckets = groupBuckets;
+      return this;
+   }
+
    public CoreQueueConfiguration setLastValue(Boolean lastValue) {
       this.lastValue = lastValue;
+      return this;
+   }
+
+   public CoreQueueConfiguration setLastValueKey(String lastValueKey) {
+      this.lastValueKey = lastValueKey;
+      return this;
+   }
+
+   public CoreQueueConfiguration setNonDestructive(Boolean nonDestructive) {
+      this.nonDestructive = nonDestructive;
       return this;
    }
 
@@ -157,7 +218,7 @@ public class CoreQueueConfiguration implements Serializable {
       return purgeOnNoConsumers;
    }
 
-   public int getMaxConsumers() {
+   public Integer getMaxConsumers() {
       return maxConsumers;
    }
 
@@ -181,8 +242,14 @@ public class CoreQueueConfiguration implements Serializable {
       result = prime * result + ((maxConsumers == null) ? 0 : maxConsumers.hashCode());
       result = prime * result + ((purgeOnNoConsumers == null) ? 0 : purgeOnNoConsumers.hashCode());
       result = prime * result + ((exclusive == null) ? 0 : exclusive.hashCode());
+      result = prime * result + ((groupRebalance == null) ? 0 : groupRebalance.hashCode());
+      result = prime * result + ((groupBuckets == null) ? 0 : groupBuckets.hashCode());
       result = prime * result + ((lastValue == null) ? 0 : lastValue.hashCode());
-      result = prime * result + (maxConsumerConfigured ? 1331 : 1337);
+      result = prime * result + ((lastValueKey == null) ? 0 : lastValueKey.hashCode());
+      result = prime * result + ((nonDestructive == null) ? 0 : nonDestructive.hashCode());
+      result = prime * result + ((consumersBeforeDispatch == null) ? 0 : consumersBeforeDispatch.hashCode());
+      result = prime * result + ((delayBeforeDispatch == null) ? 0 : delayBeforeDispatch.hashCode());
+      result = prime * result + ((routingType == null) ? 0 : routingType.hashCode());
       return result;
    }
 
@@ -201,8 +268,6 @@ public class CoreQueueConfiguration implements Serializable {
       } else if (!address.equals(other.address))
          return false;
       if (durable != other.durable)
-         return false;
-      if (maxConsumerConfigured != other.maxConsumerConfigured)
          return false;
       if (filterString == null) {
          if (other.filterString != null)
@@ -231,12 +296,78 @@ public class CoreQueueConfiguration implements Serializable {
       } else if (!exclusive.equals(other.exclusive)) {
          return false;
       }
+
+      if (groupRebalance == null) {
+         if (other.groupRebalance != null)
+            return false;
+      } else if (!groupRebalance.equals(other.groupRebalance)) {
+         return false;
+      }
+
+      if (groupBuckets == null) {
+         if (other.groupBuckets != null)
+            return false;
+      } else if (!groupBuckets.equals(other.groupBuckets)) {
+         return false;
+      }
+
       if (lastValue == null) {
          if (other.lastValue != null)
             return false;
       } else if (!lastValue.equals(other.lastValue)) {
          return false;
       }
+      if (lastValueKey == null) {
+         if (other.lastValueKey != null)
+            return false;
+      } else if (!lastValueKey.equals(other.lastValueKey)) {
+         return false;
+      }
+      if (nonDestructive == null) {
+         if (other.nonDestructive != null)
+            return false;
+      } else if (!nonDestructive.equals(other.nonDestructive)) {
+         return false;
+      }
+      if (consumersBeforeDispatch == null) {
+         if (other.consumersBeforeDispatch != null)
+            return false;
+      } else if (!consumersBeforeDispatch.equals(other.consumersBeforeDispatch)) {
+         return false;
+      }
+      if (delayBeforeDispatch == null) {
+         if (other.delayBeforeDispatch != null)
+            return false;
+      } else if (!delayBeforeDispatch.equals(other.delayBeforeDispatch)) {
+         return false;
+      }
+      if (routingType == null) {
+         if (other.routingType != null)
+            return false;
+      } else if (!routingType.equals(other.routingType)) {
+         return false;
+      }
       return true;
+   }
+
+   @Override
+   public String toString() {
+      return "CoreQueueConfiguration[" +
+         "name=" + name +
+         ", address=" + address +
+         ", routingType=" + routingType +
+         ", durable=" + durable +
+         ", filterString=" + filterString +
+         ", maxConsumers=" + maxConsumers +
+         ", purgeOnNoConsumers=" + purgeOnNoConsumers +
+         ", exclusive=" + exclusive +
+         ", groupRebalance=" + groupRebalance +
+         ", groupBuckets=" + groupBuckets +
+         ", lastValue=" + lastValue +
+         ", lastValueKey=" + lastValueKey +
+         ", nonDestructive=" + nonDestructive +
+         ", consumersBeforeDispatch=" + consumersBeforeDispatch +
+         ", delayBeforeDispatch=" + delayBeforeDispatch +
+         "]";
    }
 }

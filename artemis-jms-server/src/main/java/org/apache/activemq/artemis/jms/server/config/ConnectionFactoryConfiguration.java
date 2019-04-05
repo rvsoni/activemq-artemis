@@ -189,4 +189,16 @@ public interface ConnectionFactoryConfiguration extends EncodingSupport {
    int getInitialMessagePacketSize();
 
    ConnectionFactoryConfiguration setInitialMessagePacketSize(int size);
+
+   boolean isEnable1xPrefixes();
+
+   ConnectionFactoryConfiguration setEnable1xPrefixes(boolean enable1xPrefixes);
+
+   boolean isEnableSharedClientID();
+
+   ConnectionFactoryConfiguration setEnableSharedClientID(boolean enabled);
+
+   boolean getUseTopologyForLoadBalancing();
+
+   ConnectionFactoryConfiguration setUseTopologyForLoadBalancing(boolean useTopologyForLoadBalancing);
 }

@@ -18,6 +18,7 @@
 package org.apache.activemq.artemis.protocol.amqp.converter;
 
 import static org.apache.activemq.artemis.api.core.FilterConstants.NATIVE_MESSAGE_ID;
+import static org.apache.activemq.artemis.api.core.Message.EMBEDDED_TYPE;
 import static org.apache.activemq.artemis.api.core.Message.HDR_SCHEDULED_DELIVERY_TIME;
 import static org.apache.activemq.artemis.protocol.amqp.converter.AMQPMessageSupport.AMQP_DATA;
 import static org.apache.activemq.artemis.protocol.amqp.converter.AMQPMessageSupport.AMQP_NULL;
@@ -71,6 +72,7 @@ import javax.jms.Topic;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
 import org.apache.activemq.artemis.protocol.amqp.converter.jms.ServerJMSBytesMessage;
 import org.apache.activemq.artemis.protocol.amqp.converter.jms.ServerJMSMapMessage;
@@ -82,6 +84,7 @@ import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPIllegalS
 import org.apache.activemq.artemis.protocol.amqp.util.NettyWritable;
 import org.apache.activemq.artemis.protocol.amqp.util.TLSEncode;
 import org.apache.activemq.artemis.reader.MessageUtil;
+import org.apache.activemq.artemis.spi.core.protocol.EmbedMessageUtil;
 import org.apache.qpid.proton.amqp.Binary;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.UnsignedByte;
@@ -120,7 +123,13 @@ public class CoreAmqpConverter {
       if (coreMessage == null) {
          return null;
       }
-
+      if (coreMessage.isServerMessage() && coreMessage.isLargeMessage() && coreMessage.getType() == EMBEDDED_TYPE) {
+         //large AMQP messages received across cluster nodes
+         final Message message = EmbedMessageUtil.extractEmbedded(coreMessage);
+         if (message instanceof AMQPMessage) {
+            return (AMQPMessage) message;
+         }
+      }
       ServerJMSMessage message = ServerJMSMessage.wrapCoreMessage(coreMessage);
       message.decode();
 
@@ -169,14 +178,19 @@ public class CoreAmqpConverter {
          properties.setReplyTo(toAddress(replyTo));
          maMap.put(JMS_REPLY_TO_TYPE_MSG_ANNOTATION, destinationType(replyTo));
       }
-      String correlationId = message.getJMSCorrelationID();
-      if (correlationId != null) {
+
+      Object correlationID = message.getInnerMessage().getCorrelationID();
+      if (correlationID instanceof String || correlationID instanceof SimpleString) {
+         String c = correlationID instanceof String ? ((String) correlationID) : ((SimpleString) correlationID).toString();
          try {
-            properties.setCorrelationId(AMQPMessageIdHelper.INSTANCE.toIdObject(correlationId));
+            properties.setCorrelationId(AMQPMessageIdHelper.INSTANCE.toIdObject(c));
          } catch (ActiveMQAMQPIllegalStateException e) {
-            properties.setCorrelationId(correlationId);
+            properties.setCorrelationId(correlationID);
          }
+      } else {
+         properties.setCorrelationId(correlationID);
       }
+
       long expiration = message.getJMSExpiration();
       if (expiration != 0) {
          long ttl = expiration - System.currentTimeMillis();
@@ -201,15 +215,17 @@ public class CoreAmqpConverter {
          if (key.startsWith("JMSX")) {
             if (key.equals("JMSXUserID")) {
                String value = message.getStringProperty(key);
-               properties.setUserId(new Binary(value.getBytes(StandardCharsets.UTF_8)));
+               if (value != null) {
+                  properties.setUserId(Binary.create(StandardCharsets.UTF_8.encode(value)));
+               }
                continue;
             } else if (key.equals("JMSXGroupID")) {
                String value = message.getStringProperty(key);
                properties.setGroupId(value);
                continue;
             } else if (key.equals("JMSXGroupSeq")) {
-               UnsignedInteger value = new UnsignedInteger(message.getIntProperty(key));
-               properties.setGroupSequence(value);
+               int value = message.getIntProperty(key);
+               properties.setGroupSequence(UnsignedInteger.valueOf(value));
                continue;
             }
          } else if (key.startsWith(JMS_AMQP_PREFIX)) {
@@ -273,9 +289,13 @@ public class CoreAmqpConverter {
                footerMap.put(name, message.getObjectProperty(key));
                continue;
             }
-         } else if (key.equals("_AMQ_GROUP_ID")) {
+         } else if (key.equals(Message.HDR_GROUP_ID.toString())) {
             String value = message.getStringProperty(key);
             properties.setGroupId(value);
+            continue;
+         } else if (key.equals(Message.HDR_GROUP_SEQUENCE.toString())) {
+            int value = message.getIntProperty(key);
+            properties.setGroupSequence(UnsignedInteger.valueOf(value));
             continue;
          } else if (key.equals(NATIVE_MESSAGE_ID)) {
             // skip..internal use only
@@ -309,12 +329,8 @@ public class CoreAmqpConverter {
          if (daMap != null) {
             encoder.writeObject(new DeliveryAnnotations(daMap));
          }
-         if (maMap != null) {
-            encoder.writeObject(new MessageAnnotations(maMap));
-         }
-         if (properties != null) {
-            encoder.writeObject(properties);
-         }
+         encoder.writeObject(new MessageAnnotations(maMap));
+         encoder.writeObject(properties);
          if (apMap != null) {
             encoder.writeObject(new ApplicationProperties(apMap));
          }

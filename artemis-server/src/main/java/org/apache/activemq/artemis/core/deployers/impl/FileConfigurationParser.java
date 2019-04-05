@@ -49,9 +49,14 @@ import org.apache.activemq.artemis.core.config.ConnectorServiceConfiguration;
 import org.apache.activemq.artemis.core.config.CoreAddressConfiguration;
 import org.apache.activemq.artemis.core.config.CoreQueueConfiguration;
 import org.apache.activemq.artemis.core.config.DivertConfiguration;
+import org.apache.activemq.artemis.core.config.FederationConfiguration;
 import org.apache.activemq.artemis.core.config.ScaleDownConfiguration;
 import org.apache.activemq.artemis.core.config.TransformerConfiguration;
 import org.apache.activemq.artemis.core.config.WildcardConfiguration;
+import org.apache.activemq.artemis.core.config.federation.FederationAddressPolicyConfiguration;
+import org.apache.activemq.artemis.core.config.federation.FederationPolicySet;
+import org.apache.activemq.artemis.core.config.federation.FederationQueuePolicyConfiguration;
+import org.apache.activemq.artemis.core.config.federation.FederationUpstreamConfiguration;
 import org.apache.activemq.artemis.core.config.ha.ColocatedPolicyConfiguration;
 import org.apache.activemq.artemis.core.config.ha.LiveOnlyPolicyConfiguration;
 import org.apache.activemq.artemis.core.config.ha.ReplicaPolicyConfiguration;
@@ -65,7 +70,7 @@ import org.apache.activemq.artemis.core.config.storage.FileStorageConfiguration;
 import org.apache.activemq.artemis.core.io.aio.AIOSequentialFileFactory;
 import org.apache.activemq.artemis.core.security.Role;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
-import org.apache.activemq.artemis.core.server.DivertConfigurationRoutingType;
+import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.core.server.JournalType;
 import org.apache.activemq.artemis.core.server.SecuritySettingPlugin;
 import org.apache.activemq.artemis.core.server.cluster.impl.MessageLoadBalancingType;
@@ -181,7 +186,19 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
    private static final String DEFAULT_LVQ_NODE_NAME = "default-last-value-queue";
 
+   private static final String DEFAULT_LVQ_KEY_NODE_NAME = "default-last-value-key";
+
+   private static final String DEFAULT_NON_DESTRUCTIVE_NODE_NAME = "default-non-destructive";
+
    private static final String DEFAULT_EXCLUSIVE_NODE_NAME = "default-exclusive-queue";
+
+   private static final String DEFAULT_GROUP_REBALANCE = "default-group-rebalance";
+
+   private static final String DEFAULT_GROUP_BUCKETS = "default-group-buckets";
+
+   private static final String DEFAULT_CONSUMERS_BEFORE_DISPATCH = "default-consumers-before-dispatch";
+
+   private static final String DEFAULT_DELAY_BEFORE_DISPATCH = "default-delay-before-dispatch";
 
    private static final String REDISTRIBUTION_DELAY_NODE_NAME = "redistribution-delay";
 
@@ -205,11 +222,19 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
    private static final String AUTO_DELETE_QUEUES = "auto-delete-queues";
 
+   private static final String AUTO_DELETE_CREATED_QUEUES = "auto-delete-created-queues";
+
+   private static final String AUTO_DELETE_QUEUES_DELAY = "auto-delete-queues-delay";
+
+   private static final String AUTO_DELETE_QUEUES_MESSAGE_COUNT = "auto-delete-queues-message-count";
+
    private static final String CONFIG_DELETE_QUEUES = "config-delete-queues";
 
    private static final String AUTO_CREATE_ADDRESSES = "auto-create-addresses";
 
    private static final String AUTO_DELETE_ADDRESSES = "auto-delete-addresses";
+
+   private static final String AUTO_DELETE_ADDRESSES_DELAY = "auto-delete-addresses-delay";
 
    private static final String CONFIG_DELETE_ADDRESSES = "config-delete-addresses";
 
@@ -236,6 +261,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
    private static final String INTERNAL_NAMING_PREFIX = "internal-naming-prefix";
 
    private static final String AMQP_USE_CORE_SUBSCRIPTION_NAMING = "amqp-use-core-subscription-naming";
+
+   private static final String DEFAULT_CONSUMER_WINDOW_SIZE = "default-consumer-window-size";
 
 
    // Attributes ----------------------------------------------------
@@ -333,6 +360,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       config.setMessageExpiryScanPeriod(getLong(e, "message-expiry-scan-period", config.getMessageExpiryScanPeriod(), Validators.MINUS_ONE_OR_GT_ZERO));
 
       config.setMessageExpiryThreadPriority(getInteger(e, "message-expiry-thread-priority", config.getMessageExpiryThreadPriority(), Validators.THREAD_PRIORITY_RANGE));
+
+      config.setAddressQueueScanPeriod(getLong(e, "address-queue-scan-period", config.getAddressQueueScanPeriod(), Validators.MINUS_ONE_OR_GT_ZERO));
 
       config.setIDCacheSize(getInteger(e, "id-cache-size", config.getIDCacheSize(), Validators.GT_ZERO));
 
@@ -487,6 +516,14 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          parseBridgeConfiguration(mfNode, config);
       }
 
+      NodeList fedNodes = e.getElementsByTagName("federation");
+
+      for (int i = 0; i < fedNodes.getLength(); i++) {
+         Element fedNode = (Element) fedNodes.item(i);
+
+         parseFederationConfiguration(fedNode, config);
+      }
+
       NodeList gaNodes = e.getElementsByTagName("grouping-handler");
 
       for (int i = 0; i < gaNodes.getLength(); i++) {
@@ -528,6 +565,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       config.setCreateBindingsDir(getBoolean(e, "create-bindings-dir", config.isCreateBindingsDir()));
 
       config.setJournalDirectory(getString(e, "journal-directory", config.getJournalDirectory(), Validators.NOT_NULL_OR_EMPTY));
+
+      config.setNodeManagerLockDirectory(getString(e, "node-manager-lock-directory", null, Validators.NO_CHECK));
 
       config.setPageMaxConcurrentIO(getInteger(e, "page-max-concurrent-io", config.getPageMaxConcurrentIO(), Validators.MINUS_ONE_OR_GT_ZERO));
 
@@ -707,7 +746,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       ActiveMQServerPlugin serverPlugin = AccessController.doPrivileged(new PrivilegedAction<ActiveMQServerPlugin>() {
          @Override
          public ActiveMQServerPlugin run() {
-            return (ActiveMQServerPlugin) ClassloadingUtil.newInstanceFromClassLoader(clazz);
+            return (ActiveMQServerPlugin) ClassloadingUtil.newInstanceFromClassLoader(FileConfigurationParser.class, clazz);
          }
       });
 
@@ -764,8 +803,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          Element node = (Element) elements.item(0);
          NodeList list = node.getElementsByTagName("address");
          for (int i = 0; i < list.getLength(); i++) {
-            CoreAddressConfiguration addrConfig = parseAddressConfiguration(list.item(i));
-            config.getAddressConfigurations().add(addrConfig);
+            config.addAddressConfiguration(parseAddressConfiguration(list.item(i)));
          }
       }
    }
@@ -911,7 +949,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       SecuritySettingPlugin securitySettingPlugin = AccessController.doPrivileged(new PrivilegedAction<SecuritySettingPlugin>() {
          @Override
          public SecuritySettingPlugin run() {
-            return (SecuritySettingPlugin) ClassloadingUtil.newInstanceFromClassLoader(clazz);
+            return (SecuritySettingPlugin) ClassloadingUtil.newInstanceFromClassLoader(FileConfigurationParser.class, clazz);
          }
       });
 
@@ -995,8 +1033,16 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             addressSettings.setAddressFullMessagePolicy(policy);
          } else if (LVQ_NODE_NAME.equalsIgnoreCase(name) || DEFAULT_LVQ_NODE_NAME.equalsIgnoreCase(name)) {
             addressSettings.setDefaultLastValueQueue(XMLUtil.parseBoolean(child));
+         } else if (DEFAULT_LVQ_KEY_NODE_NAME.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultLastValueKey(SimpleString.toSimpleString(getTrimmedTextContent(child)));
+         } else if (DEFAULT_NON_DESTRUCTIVE_NODE_NAME.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultNonDestructive(XMLUtil.parseBoolean(child));
          } else if (DEFAULT_EXCLUSIVE_NODE_NAME.equalsIgnoreCase(name)) {
             addressSettings.setDefaultExclusiveQueue(XMLUtil.parseBoolean(child));
+         } else if (DEFAULT_GROUP_REBALANCE.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultGroupRebalance(XMLUtil.parseBoolean(child));
+         } else if (DEFAULT_GROUP_BUCKETS.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultGroupBuckets(XMLUtil.parseInt(child));
          } else if (MAX_DELIVERY_ATTEMPTS.equalsIgnoreCase(name)) {
             addressSettings.setMaxDeliveryAttempts(XMLUtil.parseInt(child));
          } else if (REDISTRIBUTION_DELAY_NODE_NAME.equalsIgnoreCase(name)) {
@@ -1030,6 +1076,16 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             addressSettings.setAutoCreateQueues(XMLUtil.parseBoolean(child));
          } else if (AUTO_DELETE_QUEUES.equalsIgnoreCase(name)) {
             addressSettings.setAutoDeleteQueues(XMLUtil.parseBoolean(child));
+         } else if (AUTO_DELETE_CREATED_QUEUES.equalsIgnoreCase(name)) {
+            addressSettings.setAutoDeleteCreatedQueues(XMLUtil.parseBoolean(child));
+         } else if (AUTO_DELETE_QUEUES_DELAY.equalsIgnoreCase(name)) {
+            long autoDeleteQueuesDelay = XMLUtil.parseLong(child);
+            Validators.GE_ZERO.validate(AUTO_DELETE_QUEUES_DELAY, autoDeleteQueuesDelay);
+            addressSettings.setAutoDeleteQueuesDelay(autoDeleteQueuesDelay);
+         } else if (AUTO_DELETE_QUEUES_MESSAGE_COUNT.equalsIgnoreCase(name)) {
+            long autoDeleteQueuesMessageCount = XMLUtil.parseLong(child);
+            Validators.MINUS_ONE_OR_GE_ZERO.validate(AUTO_DELETE_QUEUES_MESSAGE_COUNT, autoDeleteQueuesMessageCount);
+            addressSettings.setAutoDeleteQueuesMessageCount(autoDeleteQueuesMessageCount);
          } else if (CONFIG_DELETE_QUEUES.equalsIgnoreCase(name)) {
             String value = getTrimmedTextContent(child);
             Validators.DELETION_POLICY_TYPE.validate(CONFIG_DELETE_QUEUES, value);
@@ -1039,6 +1095,10 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             addressSettings.setAutoCreateAddresses(XMLUtil.parseBoolean(child));
          } else if (AUTO_DELETE_ADDRESSES.equalsIgnoreCase(name)) {
             addressSettings.setAutoDeleteAddresses(XMLUtil.parseBoolean(child));
+         } else if (AUTO_DELETE_ADDRESSES_DELAY.equalsIgnoreCase(name)) {
+            long autoDeleteAddressesDelay = XMLUtil.parseLong(child);
+            Validators.GE_ZERO.validate(AUTO_DELETE_ADDRESSES_DELAY, autoDeleteAddressesDelay);
+            addressSettings.setAutoDeleteAddressesDelay(autoDeleteAddressesDelay);
          } else if (CONFIG_DELETE_ADDRESSES.equalsIgnoreCase(name)) {
             String value = getTrimmedTextContent(child);
             Validators.DELETION_POLICY_TYPE.validate(CONFIG_DELETE_ADDRESSES, value);
@@ -1050,6 +1110,10 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             addressSettings.setDefaultPurgeOnNoConsumers(XMLUtil.parseBoolean(child));
          } else if (DEFAULT_MAX_CONSUMERS.equalsIgnoreCase(name)) {
             addressSettings.setDefaultMaxConsumers(XMLUtil.parseInt(child));
+         } else if (DEFAULT_CONSUMERS_BEFORE_DISPATCH.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultConsumersBeforeDispatch(XMLUtil.parseInt(child));
+         } else if (DEFAULT_DELAY_BEFORE_DISPATCH.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultDelayBeforeDispatch(XMLUtil.parseLong(child));
          } else if (DEFAULT_QUEUE_ROUTING_TYPE.equalsIgnoreCase(name)) {
             String value = getTrimmedTextContent(child);
             Validators.ROUTING_TYPE.validate(DEFAULT_QUEUE_ROUTING_TYPE, value);
@@ -1060,6 +1124,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             Validators.ROUTING_TYPE.validate(DEFAULT_ADDRESS_ROUTING_TYPE, value);
             RoutingType routingType = RoutingType.valueOf(value);
             addressSettings.setDefaultAddressRoutingType(routingType);
+         } else if (DEFAULT_CONSUMER_WINDOW_SIZE.equalsIgnoreCase(name)) {
+            addressSettings.setDefaultConsumerWindowSize(XMLUtil.parseInt(child));
          }
       }
       return setting;
@@ -1093,12 +1159,17 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       String address = null;
       String filterString = null;
       boolean durable = true;
-      boolean maxConumserConfigured = false;
-      int maxConsumers = ActiveMQDefaultConfiguration.getDefaultMaxQueueConsumers();
+      Integer maxConsumers = null;
       boolean purgeOnNoConsumers = ActiveMQDefaultConfiguration.getDefaultPurgeOnNoConsumers();
       String user = null;
       Boolean exclusive = null;
+      Boolean groupRebalance = null;
+      Integer groupBuckets = null;
       Boolean lastValue = null;
+      String lastValueKey = null;
+      Boolean nonDestructive = null;
+      Integer consumersBeforeDispatch = null;
+      Long delayBeforeDispatch = null;
 
       NamedNodeMap attributes = node.getAttributes();
       for (int i = 0; i < attributes.getLength(); i++) {
@@ -1106,13 +1177,24 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          if (item.getNodeName().equals("max-consumers")) {
             maxConsumers = Integer.parseInt(item.getNodeValue());
             Validators.MAX_QUEUE_CONSUMERS.validate(name, maxConsumers);
-            maxConumserConfigured = true;
          } else if (item.getNodeName().equals("purge-on-no-consumers")) {
             purgeOnNoConsumers = Boolean.parseBoolean(item.getNodeValue());
          } else if (item.getNodeName().equals("exclusive")) {
             exclusive = Boolean.parseBoolean(item.getNodeValue());
+         } else if (item.getNodeName().equals("group-rebalance")) {
+            groupRebalance = Boolean.parseBoolean(item.getNodeValue());
+         } else if (item.getNodeName().equals("group-buckets")) {
+            groupBuckets = Integer.parseInt(item.getNodeValue());
          } else if (item.getNodeName().equals("last-value")) {
             lastValue = Boolean.parseBoolean(item.getNodeValue());
+         } else if (item.getNodeName().equals("last-value-key")) {
+            lastValueKey = item.getNodeValue();
+         } else if (item.getNodeName().equals("non-destructive")) {
+            nonDestructive = Boolean.parseBoolean(item.getNodeValue());
+         } else if (item.getNodeName().equals("consumers-before-dispatch")) {
+            consumersBeforeDispatch = Integer.parseInt(item.getNodeValue());
+         } else if (item.getNodeName().equals("delay-before-dispatch")) {
+            delayBeforeDispatch = Long.parseLong(item.getNodeValue());
          }
       }
 
@@ -1131,8 +1213,22 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          }
       }
 
-      return new CoreQueueConfiguration().setAddress(address).setName(name).setFilterString(filterString).setDurable(durable).setMaxConsumers(maxConsumers).setPurgeOnNoConsumers(purgeOnNoConsumers).setUser(user)
-                                         .setExclusive(exclusive).setLastValue(lastValue).setMaxConsumerConfigured(maxConumserConfigured);
+      return new CoreQueueConfiguration()
+              .setAddress(address)
+              .setName(name)
+              .setFilterString(filterString)
+              .setDurable(durable)
+              .setMaxConsumers(maxConsumers)
+              .setPurgeOnNoConsumers(purgeOnNoConsumers)
+              .setUser(user)
+              .setExclusive(exclusive)
+              .setGroupRebalance(groupRebalance)
+              .setGroupBuckets(groupBuckets)
+              .setLastValue(lastValue)
+              .setLastValueKey(lastValueKey)
+              .setNonDestructive(nonDestructive)
+              .setConsumersBeforeDispatch(consumersBeforeDispatch)
+              .setDelayBeforeDispatch(delayBeforeDispatch);
    }
 
    protected CoreAddressConfiguration parseAddressConfiguration(final Node node) {
@@ -1206,17 +1302,6 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       }
 
       return configurations.get(0);
-   }
-
-   private static final ArrayList<String> POLICY_LIST = new ArrayList<>();
-
-   static {
-      POLICY_LIST.add("colocated");
-      POLICY_LIST.add("live-only");
-      POLICY_LIST.add("replicated");
-      POLICY_LIST.add("replica");
-      POLICY_LIST.add("shared-store-master");
-      POLICY_LIST.add("shared-store-slave");
    }
 
    private static final ArrayList<String> HA_LIST = new ArrayList<>();
@@ -1321,6 +1406,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
       configuration.setVoteRetryWait(getLong(policyNode, "vote-retry-wait", configuration.getVoteRetryWait(), Validators.GT_ZERO));
 
+      configuration.setRetryReplicationWait(getLong(policyNode, "retry-replication-wait", configuration.getVoteRetryWait(), Validators.GT_ZERO));
+
       configuration.setQuorumSize(getInteger(policyNode, "quorum-size", configuration.getQuorumSize(), Validators.MINUS_ONE_OR_GT_ZERO));
 
       return configuration;
@@ -1351,6 +1438,8 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       configuration.setVoteRetries(getInteger(policyNode, "vote-retries", configuration.getVoteRetries(), Validators.MINUS_ONE_OR_GE_ZERO));
 
       configuration.setVoteRetryWait(getLong(policyNode, "vote-retry-wait", configuration.getVoteRetryWait(), Validators.GT_ZERO));
+
+      configuration.setRetryReplicationWait(getLong(policyNode, "retry-replication-wait", configuration.getVoteRetryWait(), Validators.GT_ZERO));
 
       configuration.setQuorumSize(getInteger(policyNode, "quorum-size", configuration.getQuorumSize(), Validators.MINUS_ONE_OR_GT_ZERO));
 
@@ -1734,6 +1823,9 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
       String user = getString(brNode, "user", ActiveMQDefaultConfiguration.getDefaultClusterUser(), Validators.NO_CHECK);
 
+      ComponentConfigurationRoutingType routingType = ComponentConfigurationRoutingType.valueOf(getString(brNode, "routing-type", ActiveMQDefaultConfiguration.getDefaultBridgeRoutingType(), Validators.COMPONENT_ROUTING_TYPE));
+
+
       NodeList clusterPassNodes = brNode.getElementsByTagName("password");
       String password = null;
 
@@ -1778,7 +1870,28 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          transformerConfiguration = getTransformerConfiguration(transformerClassName);
       }
 
-      BridgeConfiguration config = new BridgeConfiguration().setName(name).setQueueName(queueName).setForwardingAddress(forwardingAddress).setFilterString(filterString).setTransformerConfiguration(transformerConfiguration).setMinLargeMessageSize(minLargeMessageSize).setClientFailureCheckPeriod(clientFailureCheckPeriod).setConnectionTTL(connectionTTL).setRetryInterval(retryInterval).setMaxRetryInterval(maxRetryInterval).setRetryIntervalMultiplier(retryIntervalMultiplier).setInitialConnectAttempts(initialConnectAttempts).setReconnectAttempts(reconnectAttempts).setReconnectAttemptsOnSameNode(reconnectAttemptsSameNode).setUseDuplicateDetection(useDuplicateDetection).setConfirmationWindowSize(confirmationWindowSize).setProducerWindowSize(producerWindowSize).setHA(ha).setUser(user).setPassword(password);
+      BridgeConfiguration config = new BridgeConfiguration()
+         .setName(name)
+         .setQueueName(queueName)
+         .setForwardingAddress(forwardingAddress)
+         .setFilterString(filterString)
+         .setTransformerConfiguration(transformerConfiguration)
+         .setMinLargeMessageSize(minLargeMessageSize)
+         .setClientFailureCheckPeriod(clientFailureCheckPeriod)
+         .setConnectionTTL(connectionTTL)
+         .setRetryInterval(retryInterval)
+         .setMaxRetryInterval(maxRetryInterval)
+         .setRetryIntervalMultiplier(retryIntervalMultiplier)
+         .setInitialConnectAttempts(initialConnectAttempts)
+         .setReconnectAttempts(reconnectAttempts)
+         .setReconnectAttemptsOnSameNode(reconnectAttemptsSameNode)
+         .setUseDuplicateDetection(useDuplicateDetection)
+         .setConfirmationWindowSize(confirmationWindowSize)
+         .setProducerWindowSize(producerWindowSize)
+         .setHA(ha)
+         .setUser(user)
+         .setPassword(password)
+         .setRoutingType(routingType);
 
       if (!staticConnectorNames.isEmpty()) {
          config.setStaticConnectors(staticConnectorNames);
@@ -1787,6 +1900,222 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       }
 
       mainConfig.getBridgeConfigurations().add(config);
+   }
+
+   private void parseFederationConfiguration(final Element fedNode, final Configuration mainConfig) throws Exception {
+      FederationConfiguration config = new FederationConfiguration();
+
+      String name = fedNode.getAttribute("name");
+      config.setName(name);
+
+      FederationConfiguration.Credentials credentials = new FederationConfiguration.Credentials();
+
+      // parsing federation password
+      String passwordTextFederation = fedNode.getAttribute("password");
+
+      if (passwordTextFederation != null && !passwordTextFederation.isEmpty()) {
+         String resolvedPassword = PasswordMaskingUtil.resolveMask(mainConfig.isMaskPassword(), passwordTextFederation, mainConfig.getPasswordCodec());
+         credentials.setPassword(resolvedPassword);
+      }
+
+      credentials.setUser(fedNode.getAttribute("user"));
+      config.setCredentials(credentials);
+
+      NodeList children = fedNode.getChildNodes();
+
+      for (int j = 0; j < children.getLength(); j++) {
+         Node child = children.item(j);
+
+         if (child.getNodeName().equals("upstream")) {
+            config.addUpstreamConfiguration(getUpstream((Element) child, mainConfig));
+         } else if (child.getNodeName().equals("policy-set")) {
+            config.addFederationPolicy(getPolicySet((Element)child, mainConfig));
+         } else if (child.getNodeName().equals("queue-policy")) {
+            config.addFederationPolicy(getQueuePolicy((Element)child, mainConfig));
+         } else if (child.getNodeName().equals("address-policy")) {
+            config.addFederationPolicy(getAddressPolicy((Element)child, mainConfig));
+         }
+      }
+
+      mainConfig.getFederationConfigurations().add(config);
+
+   }
+
+   private FederationQueuePolicyConfiguration getQueuePolicy(Element policyNod, final Configuration mainConfig) throws Exception {
+      FederationQueuePolicyConfiguration config = new FederationQueuePolicyConfiguration();
+      config.setName(policyNod.getAttribute("name"));
+
+      NamedNodeMap attributes = policyNod.getAttributes();
+      for (int i = 0; i < attributes.getLength(); i++) {
+         Node item = attributes.item(i);
+         if (item.getNodeName().equals("include-federated")) {
+            config.setIncludeFederated(Boolean.parseBoolean(item.getNodeValue()));
+         } else if (item.getNodeName().equals("priority-adjustment")) {
+            int priorityAdjustment = Integer.parseInt(item.getNodeValue());
+            config.setPriorityAdjustment(priorityAdjustment);
+         } else if (item.getNodeName().equals("transformer-ref")) {
+            String transformerRef = item.getNodeValue();
+            config.setTransformerRef(transformerRef);
+         }
+      }
+
+      NodeList children = policyNod.getChildNodes();
+
+      for (int j = 0; j < children.getLength(); j++) {
+         Node child = children.item(j);
+
+         if (child.getNodeName().equals("include")) {
+            config.addInclude(getQueueMatcher((Element) child));
+         } else if (child.getNodeName().equals("exclude")) {
+            config.addExclude(getQueueMatcher((Element) child));
+         }
+      }
+
+
+      return config;
+   }
+
+   private FederationQueuePolicyConfiguration.Matcher getQueueMatcher(Element child) {
+      FederationQueuePolicyConfiguration.Matcher matcher = new FederationQueuePolicyConfiguration.Matcher();
+      matcher.setAddressMatch(child.getAttribute("queue-match"));
+      matcher.setAddressMatch(child.getAttribute("address-match"));
+      return matcher;
+   }
+
+
+   private FederationAddressPolicyConfiguration getAddressPolicy(Element policyNod, final Configuration mainConfig) throws Exception {
+      FederationAddressPolicyConfiguration config = new FederationAddressPolicyConfiguration();
+      config.setName(policyNod.getAttribute("name"));
+
+      NamedNodeMap attributes = policyNod.getAttributes();
+      for (int i = 0; i < attributes.getLength(); i++) {
+         Node item = attributes.item(i);
+         if (item.getNodeName().equals("max-consumers")) {
+            int maxConsumers = Integer.parseInt(item.getNodeValue());
+            Validators.MINUS_ONE_OR_GE_ZERO.validate(item.getNodeName(), maxConsumers);
+            config.setMaxHops(maxConsumers);
+         } else if (item.getNodeName().equals("auto-delete")) {
+            boolean autoDelete = Boolean.parseBoolean(item.getNodeValue());
+            config.setAutoDelete(autoDelete);
+         } else if (item.getNodeName().equals("auto-delete-delay")) {
+            long autoDeleteDelay = Long.parseLong(item.getNodeValue());
+            Validators.GE_ZERO.validate("auto-delete-delay", autoDeleteDelay);
+            config.setAutoDeleteDelay(autoDeleteDelay);
+         } else if (item.getNodeName().equals("auto-delete-message-count")) {
+            long autoDeleteMessageCount = Long.parseLong(item.getNodeValue());
+            Validators.MINUS_ONE_OR_GE_ZERO.validate("auto-delete-message-count", autoDeleteMessageCount);
+            config.setAutoDeleteMessageCount(autoDeleteMessageCount);
+         } else if (item.getNodeName().equals("transformer-ref")) {
+            String transformerRef = item.getNodeValue();
+            config.setTransformerRef(transformerRef);
+         }
+      }
+
+      NodeList children = policyNod.getChildNodes();
+
+      for (int j = 0; j < children.getLength(); j++) {
+         Node child = children.item(j);
+
+         if (child.getNodeName().equals("include")) {
+            config.addInclude(getAddressMatcher((Element) child));
+         } else if (child.getNodeName().equals("exclude")) {
+            config.addExclude(getAddressMatcher((Element) child));
+         }
+      }
+
+
+      return config;
+   }
+
+   private FederationAddressPolicyConfiguration.Matcher getAddressMatcher(Element child) {
+      FederationAddressPolicyConfiguration.Matcher matcher = new FederationAddressPolicyConfiguration.Matcher();
+      matcher.setAddressMatch(child.getAttribute("address-match"));
+      return matcher;
+   }
+
+   private FederationPolicySet getPolicySet(Element policySetNode, final Configuration mainConfig) throws Exception {
+      FederationPolicySet config = new FederationPolicySet();
+      config.setName(policySetNode.getAttribute("name"));
+
+      NodeList children = policySetNode.getChildNodes();
+
+      List<String> policyRefs = new ArrayList<>();
+
+
+      for (int j = 0; j < children.getLength(); j++) {
+         Node child = children.item(j);
+
+         if (child.getNodeName().equals("policy")) {
+            policyRefs.add(((Element)child).getAttribute("ref"));
+         }
+      }
+      config.addPolicyRefs(policyRefs);
+
+      return config;
+   }
+
+   private FederationUpstreamConfiguration getUpstream(Element upstreamNode, final Configuration mainConfig) throws Exception {
+
+      FederationUpstreamConfiguration config = new FederationUpstreamConfiguration();
+
+      String name = upstreamNode.getAttribute("name");
+      config.setName(name);
+
+      // parsing federation password
+      String passwordTextFederation = upstreamNode.getAttribute("password");
+
+      if (passwordTextFederation != null && !passwordTextFederation.isEmpty()) {
+         String resolvedPassword = PasswordMaskingUtil.resolveMask(mainConfig.isMaskPassword(), passwordTextFederation, mainConfig.getPasswordCodec());
+         config.getConnectionConfiguration().setPassword(resolvedPassword);
+      }
+
+      config.getConnectionConfiguration().setUsername(upstreamNode.getAttribute("user"));
+
+      NamedNodeMap attributes = upstreamNode.getAttributes();
+      for (int i = 0; i < attributes.getLength(); i++) {
+         Node item = attributes.item(i);
+         if (item.getNodeName().equals("priority-adjustment")) {
+            int priorityAdjustment = Integer.parseInt(item.getNodeValue());
+            config.getConnectionConfiguration().setPriorityAdjustment(priorityAdjustment);
+         }
+      }
+
+      boolean ha = getBoolean(upstreamNode, "ha", false);
+
+      long circuitBreakerTimeout = getLong(upstreamNode, "circuit-breaker-timeout", config.getConnectionConfiguration().getCircuitBreakerTimeout(), Validators.MINUS_ONE_OR_GE_ZERO);
+
+      List<String> staticConnectorNames = new ArrayList<>();
+
+      String discoveryGroupName = null;
+
+      NodeList children = upstreamNode.getChildNodes();
+
+      List<String> policyRefs = new ArrayList<>();
+
+
+      for (int j = 0; j < children.getLength(); j++) {
+         Node child = children.item(j);
+
+         if (child.getNodeName().equals("discovery-group-ref")) {
+            discoveryGroupName = child.getAttributes().getNamedItem("discovery-group-name").getNodeValue();
+         } else if (child.getNodeName().equals("static-connectors")) {
+            getStaticConnectors(staticConnectorNames, child);
+         } else if (child.getNodeName().equals("policy")) {
+            policyRefs.add(((Element)child).getAttribute("ref"));
+         }
+      }
+      config.addPolicyRefs(policyRefs);
+
+      config.getConnectionConfiguration()
+            .setCircuitBreakerTimeout(circuitBreakerTimeout)
+            .setHA(ha);
+
+      if (!staticConnectorNames.isEmpty()) {
+         config.getConnectionConfiguration().setStaticConnectors(staticConnectorNames);
+      } else {
+         config.getConnectionConfiguration().setDiscoveryGroupName(discoveryGroupName);
+      }
+      return config;
    }
 
    private void getStaticConnectors(List<String> staticConnectorNames, Node child) {
@@ -1814,7 +2143,7 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
       String transformerClassName = getString(e, "transformer-class-name", null, Validators.NO_CHECK);
 
-      DivertConfigurationRoutingType routingType = DivertConfigurationRoutingType.valueOf(getString(e, "routing-type", ActiveMQDefaultConfiguration.getDefaultDivertRoutingType(), Validators.DIVERT_ROUTING_TYPE));
+      ComponentConfigurationRoutingType routingType = ComponentConfigurationRoutingType.valueOf(getString(e, "routing-type", ActiveMQDefaultConfiguration.getDefaultDivertRoutingType(), Validators.COMPONENT_ROUTING_TYPE));
 
       TransformerConfiguration transformerConfiguration = null;
 

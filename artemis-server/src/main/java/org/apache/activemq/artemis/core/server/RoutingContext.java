@@ -26,6 +26,24 @@ import org.apache.activemq.artemis.core.transaction.Transaction;
 
 public interface RoutingContext {
 
+   /*
+     This will return true if the RoutingContext can be reused
+     false if it cannot
+     null, if we don't know.
+
+
+     Once false, it can't be set to true
+   */
+   boolean isReusable();
+
+   int getPreviousBindingsVersion();
+
+   SimpleString getPreviousAddress();
+
+   RoutingContext setReusable(boolean reusable);
+
+   RoutingContext setReusable(boolean reusable, int version);
+
    Transaction getTransaction();
 
    void setTransaction(Transaction transaction);
@@ -42,7 +60,7 @@ public interface RoutingContext {
 
    int getQueueCount();
 
-   void clear();
+   RoutingContext clear();
 
    void addQueueWithAck(SimpleString address, Queue queue);
 
@@ -54,5 +72,16 @@ public interface RoutingContext {
 
    SimpleString getAddress(Message message);
 
+   SimpleString getAddress();
+
    RoutingType getRoutingType();
+
+   RoutingType getPreviousRoutingType();
+
+   void processReferences(List<MessageReference> refs, boolean direct);
+
+   boolean isReusable(Message message, int version);
+
+
+
 }

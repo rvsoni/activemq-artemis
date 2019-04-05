@@ -23,6 +23,16 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBasePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBindingPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBridgePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerConnectionPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerConsumerPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerCriticalPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerMessagePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerQueuePlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerSessionPlugin;
 import org.apache.activemq.artemis.utils.critical.CriticalAnalyzerPolicy;
 import org.apache.activemq.artemis.api.core.BroadcastGroupConfiguration;
 import org.apache.activemq.artemis.api.core.DiscoveryGroupConfiguration;
@@ -33,7 +43,6 @@ import org.apache.activemq.artemis.core.security.Role;
 import org.apache.activemq.artemis.core.server.JournalType;
 import org.apache.activemq.artemis.core.server.SecuritySettingPlugin;
 import org.apache.activemq.artemis.core.server.group.impl.GroupingHandlerConfiguration;
-import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerPlugin;
 import org.apache.activemq.artemis.core.settings.impl.AddressSettings;
 import org.apache.activemq.artemis.core.settings.impl.ResourceLimitSettings;
 
@@ -348,6 +357,7 @@ public interface Configuration {
     * @param uri  the URI of the acceptor
     * @return this
     * @throws Exception in case of Parsing errors on the URI
+    * @see <a href="https://github.com/apache/activemq-artemis/blob/master/docs/user-manual/en/configuring-transports.md">Configuring the Transport</a>
     */
    Configuration addAcceptorConfiguration(String name, String uri) throws Exception;
 
@@ -585,6 +595,16 @@ public interface Configuration {
     * @return
     */
    File getJournalLocation();
+
+   /**
+    * The location of the node manager lock file related to artemis.instance.
+    */
+   File getNodeManagerLockLocation();
+
+   /**
+    * Sets the file system directory used to store the node manager lock file.
+    */
+   Configuration setNodeManagerLockDirectory(String dir);
 
    /**
     * Sets the file system directory used to store journal log.
@@ -942,6 +962,19 @@ public interface Configuration {
    Configuration setMessageExpiryThreadPriority(int messageExpiryThreadPriority);
 
    /**
+    * Returns the frequency (in milliseconds) to scan addresses and queues to detect which
+    * ones should be deleted. <br>
+    * Default value is {@link org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration#DEFAULT_MESSAGE_EXPIRY_SCAN_PERIOD}.
+    */
+   long getAddressQueueScanPeriod();
+
+   /**
+    * Sets the frequency (in milliseconds) to scan addresses and queues to detect which
+    * ones should be deleted.
+    */
+   Configuration setAddressQueueScanPeriod(long addressQueueScanPeriod);
+
+   /**
     * @return A list of AddressSettings per matching to be deployed to the address settings repository
     */
    Map<String, AddressSettings> getAddressesSettings();
@@ -1129,20 +1162,71 @@ public interface Configuration {
    /**
     * @param plugins
     */
-   void registerBrokerPlugins(List<ActiveMQServerPlugin> plugins);
+   void registerBrokerPlugins(List<ActiveMQServerBasePlugin> plugins);
 
    /**
     * @param plugin
     */
-   void registerBrokerPlugin(ActiveMQServerPlugin plugin);
+   void registerBrokerPlugin(ActiveMQServerBasePlugin plugin);
 
    /**
     * @param plugin
     */
-   void unRegisterBrokerPlugin(ActiveMQServerPlugin plugin);
+   void unRegisterBrokerPlugin(ActiveMQServerBasePlugin plugin);
 
    /**
     * @return
     */
-   List<ActiveMQServerPlugin> getBrokerPlugins();
+   List<ActiveMQServerBasePlugin> getBrokerPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerConnectionPlugin> getBrokerConnectionPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerSessionPlugin> getBrokerSessionPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerConsumerPlugin> getBrokerConsumerPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerAddressPlugin> getBrokerAddressPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerQueuePlugin> getBrokerQueuePlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerBindingPlugin> getBrokerBindingPlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerMessagePlugin> getBrokerMessagePlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerBridgePlugin> getBrokerBridgePlugins();
+
+   /**
+    * @return
+    */
+   List<ActiveMQServerCriticalPlugin> getBrokerCriticalPlugins();
+
+   /**
+    * @return
+    */
+   List<FederationConfiguration> getFederationConfigurations();
+
 }

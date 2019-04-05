@@ -18,8 +18,10 @@ package org.apache.activemq.artemis.core.paging.cursor;
 
 import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.function.Consumer;
 
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.paging.PagedMessage;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.MessageReference;
@@ -30,7 +32,7 @@ import org.apache.activemq.artemis.core.transaction.Transaction;
 import org.apache.activemq.artemis.utils.collections.LinkedListImpl;
 import org.jboss.logging.Logger;
 
-public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> implements PagedReference {
+public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> implements PagedReference, Runnable {
 
    private static final Logger logger = Logger.getLogger(PagedReferenceImpl.class);
 
@@ -67,11 +69,19 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
    private static final byte UNDEFINED_IS_LARGE_MESSAGE = 2;
    private byte largeMessage;
 
-   private long transactionID = -1;
+   private long transactionID = -2;
 
    private long messageID = -1;
 
    private long messageSize = -1;
+
+   private Consumer<? super MessageReference> onDelivery;
+
+   //Durable field : 0 is false, 1 is true, -1 not defined
+   private static final byte IS_NOT_DURABLE = 0;
+   private static final byte IS_DURABLE = 1;
+   private static final byte UNDEFINED_IS_DURABLE = -1;
+   private byte durable = UNDEFINED_IS_DURABLE;
 
    @Override
    public Object getProtocolData() {
@@ -86,6 +96,27 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
    @Override
    public Message getMessage() {
       return getPagedMessage().getMessage();
+   }
+
+   @Override
+   public void onDelivery(Consumer<? super MessageReference> onDelivery) {
+      assert this.onDelivery == null;
+      this.onDelivery = onDelivery;
+   }
+
+   /**
+    * It will call {@link Consumer#accept(Object)} on {@code this} of the {@link Consumer} registered in {@link #onDelivery(Consumer)}, if any.
+    */
+   @Override
+   public void run() {
+      final Consumer<? super MessageReference> onDelivery = this.onDelivery;
+      if (onDelivery != null) {
+         try {
+            onDelivery.accept(this);
+         } finally {
+            this.onDelivery = null;
+         }
+      }
    }
 
    @Override
@@ -119,14 +150,17 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
          this.largeMessage = message.getMessage().isLargeMessage() ? IS_LARGE_MESSAGE : IS_NOT_LARGE_MESSAGE;
          this.transactionID = message.getTransactionID();
          this.messageID = message.getMessage().getMessageID();
-
+         this.durable = message.getMessage().isDurable() ? IS_DURABLE : IS_NOT_DURABLE;
+         this.deliveryTime = message.getMessage().getScheduledDeliveryTime();
          //pre-cache the message size so we don't have to reload the message later if it is GC'd
          getPersistentSize();
       } else {
          this.largeMessage = UNDEFINED_IS_LARGE_MESSAGE;
-         this.transactionID = -1;
+         this.transactionID = -2;
          this.messageID = -1;
          this.messageSize = -1;
+         this.durable = UNDEFINED_IS_DURABLE;
+         this.deliveryTime = UNDEFINED_DELIVERY_TIME;
       }
    }
 
@@ -317,10 +351,20 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
 
    @Override
    public long getTransactionID() {
-      if (transactionID < 0) {
+      if (transactionID < -1) {
          transactionID = getPagedMessage().getTransactionID();
       }
       return transactionID;
+   }
+
+   @Override
+   public void addPendingFlag() {
+      subscription.addPendingDelivery(position);
+   }
+
+   @Override
+   public void removePendingFlag() {
+      subscription.removePendingDelivery(position);
    }
 
    @Override
@@ -329,6 +373,15 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
          messageID = getPagedMessage().getMessage().getMessageID();
       }
       return messageID;
+   }
+
+   @Override
+   public SimpleString getLastValueProperty() {
+      SimpleString lastValue = getMessage().getSimpleStringProperty(getQueue().getLastValueKey());
+      if (lastValue == null) {
+         lastValue = getMessage().getLastValueProperty();
+      }
+      return lastValue;
    }
 
    @Override
@@ -341,6 +394,14 @@ public class PagedReferenceImpl extends LinkedListImpl.Node<PagedReferenceImpl> 
          }
       }
       return messageSize;
+   }
+
+   @Override
+   public boolean isDurable() {
+      if (durable == UNDEFINED_IS_DURABLE) {
+         durable = getMessage().isDurable() ? IS_DURABLE : IS_NOT_DURABLE;
+      }
+      return durable == IS_DURABLE;
    }
 
 }

@@ -22,6 +22,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 
 import org.apache.activemq.artemis.Closeable;
 import org.apache.activemq.artemis.api.core.Message;
@@ -42,6 +43,8 @@ public interface ServerSession extends SecurityAuth {
    int getMinLargeMessageSize();
 
    Object getConnectionID();
+
+   Executor getSessionExecutor();
 
    /**
     * Certain protocols may create an internal session that shouldn't go through security checks.
@@ -104,7 +107,15 @@ public interface ServerSession extends SecurityAuth {
 
    void addCloseable(Closeable closeable);
 
-   /**
+   ServerConsumer createConsumer(long consumerID,
+                                 SimpleString queueName,
+                                 SimpleString filterString,
+                                 int priority,
+                                 boolean browseOnly,
+                                 boolean supportLargeMessage,
+                                 Integer credits) throws Exception;
+
+    /**
     * To be used by protocol heads that needs to control the transaction outside the session context.
     */
    void resetTX(Transaction transaction);
@@ -159,6 +170,27 @@ public interface ServerSession extends SecurityAuth {
                      boolean purgeOnNoConsumers,
                      Boolean exclusive,
                      Boolean lastValue,
+                     boolean autoCreated) throws Exception;
+
+   Queue createQueue(SimpleString address,
+                     SimpleString name,
+                     RoutingType routingType,
+                     SimpleString filterString,
+                     boolean temporary,
+                     boolean durable,
+                     int maxConsumers,
+                     boolean purgeOnNoConsumers,
+                     Boolean exclusive,
+                     Boolean groupRebalance,
+                     Integer groupBuckets,
+                     Boolean lastValue,
+                     SimpleString lastValueKey,
+                     Boolean nonDestructive,
+                     Integer consumersBeforeDispatch,
+                     Long delayBeforeDispatch,
+                     Boolean autoDelete,
+                     Long autoDeleteDelay,
+                     Long autoDeleteMessageCount,
                      boolean autoCreated) throws Exception;
 
    Queue createQueue(SimpleString address,
@@ -225,11 +257,25 @@ public interface ServerSession extends SecurityAuth {
                       boolean direct,
                       boolean noAutoCreateQueue) throws Exception;
 
+   RoutingStatus send(Transaction tx,
+                      Message message,
+                      boolean direct,
+                      boolean noAutoCreateQueue,
+                      RoutingContext routingContext) throws Exception;
+
+
    RoutingStatus doSend(Transaction tx,
                         Message msg,
                         SimpleString originalAddress,
                         boolean direct,
                         boolean noAutoCreateQueue) throws Exception;
+
+   RoutingStatus doSend(Transaction tx,
+                        Message msg,
+                        SimpleString originalAddress,
+                        boolean direct,
+                        boolean noAutoCreateQueue,
+                        RoutingContext routingContext) throws Exception;
 
    RoutingStatus send(Message message, boolean direct, boolean noAutoCreateQueue) throws Exception;
 
@@ -285,6 +331,25 @@ public interface ServerSession extends SecurityAuth {
                      Boolean purgeOnNoConsumers,
                      Boolean exclusive,
                      Boolean lastValue) throws Exception;
+
+   void createSharedQueue(SimpleString address,
+                          SimpleString name,
+                          RoutingType routingType,
+                          SimpleString filterString,
+                          boolean durable,
+                          Integer maxConsumers,
+                          Boolean purgeOnNoConsumers,
+                          Boolean exclusive,
+                          Boolean groupRebalance,
+                          Integer groupBuckets,
+                          Boolean lastValue,
+                          SimpleString lastValueKey,
+                          Boolean nonDestructive,
+                          Integer consumersBeforeDispatch,
+                          Long delayBeforeDispatch,
+                          Boolean autoDelete,
+                          Long autoDeleteDelay,
+                          Long autoDeleteMessageCount) throws Exception;
 
    void createSharedQueue(SimpleString address,
                           SimpleString name,
@@ -358,4 +423,6 @@ public interface ServerSession extends SecurityAuth {
    int getConsumerCount();
 
    int getProducerCount();
+
+   int getDefaultConsumerWindowSize(SimpleString address);
 }

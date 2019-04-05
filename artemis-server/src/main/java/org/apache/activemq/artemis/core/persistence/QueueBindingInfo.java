@@ -40,6 +40,10 @@ public interface QueueBindingInfo {
 
    boolean isAutoCreated();
 
+   boolean isConfigurationManaged();
+
+   void setConfigurationManaged(boolean configurationManaged);
+
    SimpleString getUser();
 
    void addQueueStatusEncoding(QueueStatusEncoding status);
@@ -62,7 +66,33 @@ public interface QueueBindingInfo {
 
    void setLastValue(boolean lastValue);
 
+   SimpleString getLastValueKey();
+
+   void setLastValueKey(SimpleString lastValue);
+
+   boolean isNonDestructive();
+
+   void setNonDestructive(boolean nonDestructive);
+
+   int getConsumersBeforeDispatch();
+
+   void setConsumersBeforeDispatch(int consumersBeforeDispatch);
+
+   long getDelayBeforeDispatch();
+
+   void setDelayBeforeDispatch(long delayBeforeDispatch);
+
    byte getRoutingType();
 
    void setRoutingType(byte routingType);
+
+   boolean isGroupRebalance();
+
+   int getGroupBuckets();
+
+   boolean isAutoDelete();
+
+   long getAutoDeleteDelay();
+
+   long getAutoDeleteMessageCount();
 }

@@ -73,6 +73,7 @@ import org.apache.activemq.artemis.core.server.cluster.Bridge;
 import org.apache.activemq.artemis.core.server.transformer.AddHeadersTransformer;
 import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.core.server.cluster.impl.BridgeImpl;
+import org.apache.activemq.artemis.core.server.cluster.impl.BridgeMetrics;
 import org.apache.activemq.artemis.core.server.impl.ActiveMQServerImpl;
 import org.apache.activemq.artemis.core.server.impl.ServiceRegistryImpl;
 import org.apache.activemq.artemis.core.settings.impl.AddressFullMessagePolicy;
@@ -501,6 +502,11 @@ public class BridgeTest extends ActiveMQTestBase {
       sf0.close();
 
       sf1.close();
+
+      assertEquals(1, server0.getClusterManager().getBridges().size());
+      BridgeMetrics bridgeMetrics = server0.getClusterManager().getBridges().get("bridge1").getMetrics();
+      assertEquals(10, bridgeMetrics.getMessagesPendingAcknowledgement());
+      assertEquals(10, bridgeMetrics.getMessagesAcknowledged());
 
       closeFields();
       if (server0.getConfiguration().isPersistenceEnabled()) {
@@ -1071,6 +1077,9 @@ public class BridgeTest extends ActiveMQTestBase {
 
       sf1.close();
 
+      SimpleString queueName1Str = new SimpleString(queueName1);
+      Wait.assertTrue(() -> server1.locateQueue(queueName1Str) == null);
+
       server1.stop();
 
       session0.close();
@@ -1078,7 +1087,8 @@ public class BridgeTest extends ActiveMQTestBase {
       sf0.close();
 
       closeFields();
-      assertEquals(0, loadQueues(server0).size());
+
+      Wait.assertEquals(0, () -> loadQueues(server0).size());
 
    }
 

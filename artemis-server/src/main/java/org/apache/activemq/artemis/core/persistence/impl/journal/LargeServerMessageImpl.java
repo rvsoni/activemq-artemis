@@ -24,11 +24,14 @@ import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
 import org.apache.activemq.artemis.api.core.ActiveMQIOErrorException;
 import org.apache.activemq.artemis.api.core.ActiveMQInternalErrorException;
+import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.RefCountMessageListener;
 import org.apache.activemq.artemis.core.buffers.impl.ChannelBufferWrapper;
 import org.apache.activemq.artemis.core.io.SequentialFile;
 import org.apache.activemq.artemis.core.message.LargeBodyEncoder;
 import org.apache.activemq.artemis.core.message.impl.CoreMessage;
+import org.apache.activemq.artemis.core.persistence.StorageManager;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.LargeServerMessage;
 import org.apache.activemq.artemis.utils.DataConstants;
@@ -38,6 +41,34 @@ import org.jboss.logging.Logger;
 import io.netty.buffer.Unpooled;
 
 public final class LargeServerMessageImpl extends CoreMessage implements LargeServerMessage {
+
+   // When a message is stored on the journal, it will contain some header and trail on the journal
+   // we need to take that into consideration if that would fit the Journal TimedBuffer.
+   private static final int ESTIMATE_RECORD_TRAIL = 512;
+
+   /** This will check if a regular message needs to be converted as large message */
+   public static Message checkLargeMessage(Message message, StorageManager storageManager) throws Exception {
+      if (message.isLargeMessage()) {
+         return message; // nothing to be done on this case
+      }
+
+      if (message.getEncodeSize() + ESTIMATE_RECORD_TRAIL > storageManager.getMaxRecordSize()) {
+         return asLargeMessage(message, storageManager);
+      } else {
+         return message;
+      }
+   }
+
+   private static Message asLargeMessage(Message message, StorageManager storageManager) throws Exception {
+      ICoreMessage coreMessage = message.toCore();
+      LargeServerMessage lsm = storageManager.createLargeMessage(storageManager.generateID(), coreMessage);
+      ActiveMQBuffer buffer = coreMessage.getReadOnlyBodyBuffer();
+      final int readableBytes = buffer.readableBytes();
+      lsm.addBytes(buffer);
+      lsm.releaseResources();
+      lsm.putLongProperty(Message.HDR_LARGE_BODY_SIZE, readableBytes);
+      return lsm;
+   }
 
    // Constants -----------------------------------------------------
    private static final Logger logger = Logger.getLogger(LargeServerMessageImpl.class);
@@ -52,10 +83,6 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
 
    // We should only use the NIO implementation on the Journal
    private SequentialFile file;
-
-   // set when a copyFrom is called
-   // The actual copy is done when finishCopy is called
-   private SequentialFile pendingCopy;
 
    private long bodySize = -1;
 
@@ -132,6 +159,21 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
    }
 
    @Override
+   public synchronized void addBytes(final ActiveMQBuffer bytes) throws Exception {
+      validateFile();
+
+      if (!file.isOpen()) {
+         file.open();
+      }
+
+      final int readableBytes = bytes.readableBytes();
+
+      storageManager.addBytesToLargeMessage(file, getMessageID(), bytes);
+
+      bodySize += readableBytes;
+   }
+
+   @Override
    public synchronized int getEncodeSize() {
       return getHeadersAndPropertiesEncodeSize();
    }
@@ -150,7 +192,15 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
    public synchronized void incrementDelayDeletionCount() {
       delayDeletionCount.incrementAndGet();
       try {
-         incrementRefCount();
+         if (paged) {
+            RefCountMessageListener tmpContext = super.getContext();
+            setContext(null);
+            incrementRefCount();
+            setContext(tmpContext);
+         } else {
+            incrementRefCount();
+         }
+
       } catch (Exception e) {
          ActiveMQServerLogger.LOGGER.errorIncrementDelayDeletionCount(e);
       }
@@ -189,7 +239,15 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
 
    @Override
    public synchronized int decrementRefCount() throws Exception {
-      int currentRefCount = super.decrementRefCount();
+      int currentRefCount;
+      if (paged) {
+         RefCountMessageListener tmpContext = super.getContext();
+         setContext(null);
+         currentRefCount = super.decrementRefCount();
+         setContext(tmpContext);
+      } else {
+         currentRefCount = super.decrementRefCount();
+      }
 
       // We use <= as this could be used by load.
       // because of a failure, no references were loaded, so we have 0... and we still need to delete the associated
@@ -197,7 +255,6 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
       if (delayDeletionCount.get() <= 0) {
          checkDelete();
       }
-
       return currentRefCount;
    }
 
@@ -219,6 +276,31 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
          try {
             file.close();
          } catch (Exception ignored) {
+         }
+      }
+   }
+
+   @Override
+   public int getBodyBufferSize() {
+      final boolean closeFile = file == null || !file.isOpen();
+      try {
+         openFile();
+         final long fileSize = file.size();
+         int fileSizeAsInt = (int) fileSize;
+         if (fileSizeAsInt < 0) {
+            logger.warnf("suspicious large message file size of %d bytes for %s, will use %d instead.",
+                         fileSize, file.getFileName(), Integer.MAX_VALUE);
+            fileSizeAsInt = Integer.MAX_VALUE;
+         }
+         return fileSizeAsInt;
+      } catch (Exception e) {
+         throw new RuntimeException(e);
+      } finally {
+         if (closeFile) {
+            try {
+               file.close();
+            } catch (Exception ignored) {
+            }
          }
       }
    }
@@ -249,6 +331,7 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
    public synchronized void releaseResources() {
       if (file != null && file.isOpen()) {
          try {
+            file.sync();
             file.close();
          } catch (Exception e) {
             ActiveMQServerLogger.LOGGER.largeMessageErrorReleasingResources(e);
@@ -463,22 +546,6 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
          }
       }
 
-      @Override
-      public int encode(final ActiveMQBuffer bufferOut, final int size) throws ActiveMQException {
-         // This could maybe be optimized (maybe reading directly into bufferOut)
-         ByteBuffer bufferRead = ByteBuffer.allocate(size);
-
-         int bytesRead = encode(bufferRead);
-
-         bufferRead.flip();
-
-         if (bytesRead > 0) {
-            bufferOut.writeBytes(bufferRead.array(), 0, bytesRead);
-         }
-
-         return bytesRead;
-      }
-
       /* (non-Javadoc)
        * @see org.apache.activemq.artemis.core.message.LargeBodyEncoder#getLargeBodySize()
        */
@@ -487,4 +554,5 @@ public final class LargeServerMessageImpl extends CoreMessage implements LargeSe
          return getBodySize();
       }
    }
+
 }

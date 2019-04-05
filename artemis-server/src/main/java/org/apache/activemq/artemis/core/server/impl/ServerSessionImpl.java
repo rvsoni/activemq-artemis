@@ -18,6 +18,7 @@ package org.apache.activemq.artemis.core.server.impl;
 
 import javax.json.JsonArrayBuilder;
 import javax.json.JsonObjectBuilder;
+import javax.security.cert.X509Certificate;
 import javax.transaction.xa.XAException;
 import javax.transaction.xa.Xid;
 import java.util.ArrayList;
@@ -30,20 +31,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.activemq.artemis.Closeable;
-import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
+import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQIOErrorException;
 import org.apache.activemq.artemis.api.core.ActiveMQIllegalStateException;
 import org.apache.activemq.artemis.api.core.ActiveMQNonExistentQueueException;
-import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.Pair;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
-import org.apache.activemq.artemis.api.core.client.ClientSession;
 import org.apache.activemq.artemis.api.core.management.CoreNotificationType;
 import org.apache.activemq.artemis.api.core.management.ManagementHelper;
 import org.apache.activemq.artemis.core.exception.ActiveMQXAException;
@@ -54,11 +54,13 @@ import org.apache.activemq.artemis.core.paging.PagingManager;
 import org.apache.activemq.artemis.core.paging.PagingStore;
 import org.apache.activemq.artemis.core.persistence.OperationContext;
 import org.apache.activemq.artemis.core.persistence.StorageManager;
+import org.apache.activemq.artemis.core.persistence.impl.journal.LargeServerMessageImpl;
 import org.apache.activemq.artemis.core.postoffice.Binding;
 import org.apache.activemq.artemis.core.postoffice.BindingType;
 import org.apache.activemq.artemis.core.postoffice.PostOffice;
 import org.apache.activemq.artemis.core.postoffice.QueueBinding;
 import org.apache.activemq.artemis.core.postoffice.RoutingStatus;
+import org.apache.activemq.artemis.core.remoting.CertificateUtil;
 import org.apache.activemq.artemis.core.remoting.CloseListener;
 import org.apache.activemq.artemis.core.remoting.FailureListener;
 import org.apache.activemq.artemis.core.security.CheckType;
@@ -69,7 +71,6 @@ import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
 import org.apache.activemq.artemis.core.server.BindingQueryResult;
-import org.apache.activemq.artemis.core.server.LargeServerMessage;
 import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.QueueQueryResult;
@@ -87,8 +88,10 @@ import org.apache.activemq.artemis.core.transaction.Transaction.State;
 import org.apache.activemq.artemis.core.transaction.TransactionOperationAbstract;
 import org.apache.activemq.artemis.core.transaction.TransactionPropertyIndexes;
 import org.apache.activemq.artemis.core.transaction.impl.TransactionImpl;
+import org.apache.activemq.artemis.logs.AuditLogger;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.protocol.SessionCallback;
+import org.apache.activemq.artemis.utils.CompositeAddress;
 import org.apache.activemq.artemis.utils.JsonLoader;
 import org.apache.activemq.artemis.utils.PrefixUtil;
 import org.apache.activemq.artemis.utils.collections.TypedProperties;
@@ -189,6 +192,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
    private Set<Closeable> closeables;
 
+   private final Executor sessionExecutor;
+
    public ServerSessionImpl(final String name,
                             final String username,
                             final String password,
@@ -263,9 +268,13 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       remotingConnection.addFailureListener(this);
       this.context = context;
 
+      this.sessionExecutor = server.getExecutorFactory().getExecutor();
+
       if (!xa) {
          tx = newTransaction();
       }
+      //When the ServerSessionImpl initialization is complete, need to create and send a SESSION_CREATED notification.
+      sendSessionNotification(CoreNotificationType.SESSION_CREATED);
    }
 
    // ServerSession implementation ---------------------------------------------------------------------------
@@ -280,6 +289,11 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          closeables = new HashSet<>();
       }
       this.closeables.add(closeable);
+   }
+
+   @Override
+   public Executor getSessionExecutor() {
+      return sessionExecutor;
    }
 
    @Override
@@ -356,8 +370,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       }
       synchronized (this) {
          if (!closed) {
-            if (server.hasBrokerPlugins()) {
-               server.callBrokerPlugins(plugin -> plugin.beforeCloseSession(this, failed));
+            if (server.hasBrokerSessionPlugins()) {
+               server.callBrokerSessionPlugins(plugin -> plugin.beforeCloseSession(this, failed));
             }
          }
          this.setStarted(false);
@@ -411,11 +425,28 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          }
 
          closed = true;
+         //When the ServerSessionImpl is closed, need to create and send a SESSION_CLOSED notification.
+         sendSessionNotification(CoreNotificationType.SESSION_CLOSED);
 
-         if (server.hasBrokerPlugins()) {
-            server.callBrokerPlugins(plugin -> plugin.afterCloseSession(this, failed));
+         if (server.hasBrokerSessionPlugins()) {
+            server.callBrokerSessionPlugins(plugin -> plugin.afterCloseSession(this, failed));
          }
       }
+   }
+
+   private void sendSessionNotification(final CoreNotificationType type) throws Exception {
+      final TypedProperties props = new TypedProperties();
+      if (this.getConnectionID() != null) {
+         props.putSimpleStringProperty(ManagementHelper.HDR_CONNECTION_NAME, SimpleString.toSimpleString(this.getConnectionID().toString()));
+      }
+      props.putSimpleStringProperty(ManagementHelper.HDR_USER, SimpleString.toSimpleString(this.getUsername()));
+      props.putSimpleStringProperty(ManagementHelper.HDR_SESSION_NAME, SimpleString.toSimpleString(this.getName()));
+
+      props.putSimpleStringProperty(ManagementHelper.HDR_CLIENT_ID, SimpleString.toSimpleString(this.remotingConnection.getClientID()));
+      props.putSimpleStringProperty(ManagementHelper.HDR_PROTOCOL_NAME, SimpleString.toSimpleString(this.remotingConnection.getProtocolName()));
+      props.putSimpleStringProperty(ManagementHelper.HDR_ADDRESS, managementService.getManagementNotificationAddress());
+      props.putIntProperty(ManagementHelper.HDR_DISTANCE, 0);
+      managementService.sendNotification(new Notification(null, type, props));
    }
 
    private void securityCheck(SimpleString address, CheckType checkType, SecurityAuth auth) throws Exception {
@@ -445,6 +476,20 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                                         final boolean browseOnly,
                                         final boolean supportLargeMessage,
                                         final Integer credits) throws Exception {
+      return this.createConsumer(consumerID, queueName, filterString, ActiveMQDefaultConfiguration.getDefaultConsumerPriority(), browseOnly, supportLargeMessage, credits);
+   }
+
+   @Override
+   public ServerConsumer createConsumer(final long consumerID,
+                                        final SimpleString queueName,
+                                        final SimpleString filterString,
+                                        final int priority,
+                                        final boolean browseOnly,
+                                        final boolean supportLargeMessage,
+                                        final Integer credits) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.createCoreConsumer(this, getUsername(), consumerID, queueName, filterString, priority, browseOnly, supportLargeMessage, credits);
+      }
       final SimpleString unPrefixedQueueName = removePrefix(queueName);
 
       Binding binding = postOffice.getBinding(unPrefixedQueueName);
@@ -470,16 +515,16 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
       Filter filter = FilterImpl.createFilter(filterString);
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.beforeCreateConsumer(consumerID, (QueueBinding) binding,
+      if (server.hasBrokerConsumerPlugins()) {
+         server.callBrokerConsumerPlugins(plugin -> plugin.beforeCreateConsumer(consumerID, (QueueBinding) binding,
                filterString, browseOnly, supportLargeMessage));
       }
 
-      ServerConsumer consumer = new ServerConsumerImpl(consumerID, this, (QueueBinding) binding, filter, started, browseOnly, storageManager, callback, preAcknowledge, strictUpdateDeliveryCount, managementService, supportLargeMessage, credits, server);
+      ServerConsumer consumer = new ServerConsumerImpl(consumerID, this, (QueueBinding) binding, filter, priority, started, browseOnly, storageManager, callback, preAcknowledge, strictUpdateDeliveryCount, managementService, supportLargeMessage, credits, server);
       consumers.put(consumer.getID(), consumer);
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.afterCreateConsumer(consumer));
+      if (server.hasBrokerConsumerPlugins()) {
+         server.callBrokerConsumerPlugins(plugin -> plugin.afterCreateConsumer(consumer));
       }
 
       if (!browseOnly) {
@@ -499,6 +544,16 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
          // HORNETQ-946
          props.putSimpleStringProperty(ManagementHelper.HDR_USER, SimpleString.toSimpleString(username));
+
+         props.putSimpleStringProperty(ManagementHelper.HDR_VALIDATED_USER, SimpleString.toSimpleString(validatedUser));
+
+         String certSubjectDN = "unavailable";
+         X509Certificate[] certs = CertificateUtil.getCertsFromConnection(this.remotingConnection);
+         if (certs != null && certs.length > 0 && certs[0] != null) {
+            certSubjectDN = certs[0].getSubjectDN().getName();
+         }
+
+         props.putSimpleStringProperty(ManagementHelper.HDR_CERT_SUBJECT_DN, SimpleString.toSimpleString(certSubjectDN));
 
          props.putSimpleStringProperty(ManagementHelper.HDR_REMOTE_ADDRESS, SimpleString.toSimpleString(this.remotingConnection.getRemoteAddress()));
 
@@ -559,7 +614,7 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
    @Override
    public Queue createQueue(AddressInfo addressInfo, SimpleString name, SimpleString filterString, boolean temporary, boolean durable) throws Exception {
       AddressSettings as = server.getAddressSettingsRepository().getMatch(addressInfo.getName().toString());
-      return createQueue(addressInfo, name, filterString, temporary, durable, as.getDefaultMaxConsumers(), as.isDefaultPurgeOnNoConsumers(), as.isDefaultExclusiveQueue(), as.isDefaultLastValueQueue(), false);
+      return createQueue(addressInfo, name, filterString, temporary, durable, as.getDefaultMaxConsumers(), as.isDefaultPurgeOnNoConsumers(), as.isDefaultExclusiveQueue(), as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), as.isDefaultLastValueQueue(), as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), ActiveMQServerImpl.isAutoDelete(false, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), false);
    }
 
    public Queue createQueue(final AddressInfo addressInfo,
@@ -570,8 +625,22 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                             final int maxConsumers,
                             final boolean purgeOnNoConsumers,
                             final boolean exclusive,
+                            final boolean groupRebalance,
+                            final int groupBuckets,
                             final boolean lastValue,
+                            SimpleString lastValueKey,
+                            final boolean nonDestructive,
+                            final int consumersBeforeDispatch,
+                            final long delayBeforeDispatch,
+                            final boolean autoDelete,
+                            final long autoDeleteDelay,
+                            final long autoDeleteMessageCount,
                             final boolean autoCreated) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.createQueue(this, getUsername(), addressInfo, name, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers,
+                  exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch,
+                  delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, autoCreated);
+      }
       final SimpleString unPrefixedName = removePrefix(name);
 
       AddressInfo art = getAddressAndRoutingType(addressInfo);
@@ -591,7 +660,7 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
       server.checkQueueCreationLimit(getUsername());
 
-      Queue queue = server.createQueue(art, unPrefixedName, filterString, SimpleString.toSimpleString(getUsername()), durable, temporary, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, lastValue, as.isAutoCreateAddresses());
+      Queue queue = server.createQueue(art, unPrefixedName, filterString, SimpleString.toSimpleString(getUsername()), durable, temporary, autoCreated, maxConsumers, purgeOnNoConsumers, exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, as.isAutoCreateAddresses());
 
       if (temporary) {
          // Temporary queue in core simply means the queue will be deleted if
@@ -631,7 +700,7 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                             final boolean purgeOnNoConsumers,
                             final boolean autoCreated) throws Exception {
       AddressSettings as = server.getAddressSettingsRepository().getMatch(address.toString());
-      return createQueue(new AddressInfo(address, routingType), name, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(), as.isDefaultLastValueQueue(), autoCreated);
+      return createQueue(new AddressInfo(address, routingType), name, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers, as.isDefaultExclusiveQueue(), as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), as.isDefaultLastValueQueue(), as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), ActiveMQServerImpl.isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreated);
    }
 
    @Override
@@ -646,13 +715,48 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                             final Boolean exclusive,
                             final Boolean lastValue,
                             final boolean autoCreated) throws Exception {
-      if (exclusive == null || lastValue == null) {
+      return createQueue(address, name, routingType, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers, exclusive, null, null, lastValue, null, null, null, null, null, null, null, autoCreated);
+   }
+
+   @Override
+   public Queue createQueue(final SimpleString address,
+                            final SimpleString name,
+                            final RoutingType routingType,
+                            final SimpleString filterString,
+                            final boolean temporary,
+                            final boolean durable,
+                            final int maxConsumers,
+                            final boolean purgeOnNoConsumers,
+                            final Boolean exclusive,
+                            final Boolean groupRebalance,
+                            final Integer groupBuckets,
+                            final Boolean lastValue,
+                            final SimpleString lastValueKey,
+                            final Boolean nonDestructive,
+                            final Integer consumersBeforeDispatch,
+                            final Long delayBeforeDispatch,
+                            final Boolean autoDelete,
+                            final Long autoDeleteDelay,
+                            final Long autoDeleteMessageCount,
+                            final boolean autoCreated) throws Exception {
+      if (exclusive == null || groupRebalance == null || groupBuckets == null || lastValue == null || lastValueKey == null || nonDestructive == null || consumersBeforeDispatch == null || delayBeforeDispatch == null || autoDelete == null || autoDeleteDelay == null || autoDeleteMessageCount == null) {
          AddressSettings as = server.getAddressSettingsRepository().getMatch(address.toString());
          return createQueue(new AddressInfo(address, routingType), name, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers,
-                            exclusive == null ? as.isDefaultExclusiveQueue() : exclusive, lastValue == null ? as.isDefaultLastValueQueue() : lastValue, autoCreated);
+                 exclusive == null ? as.isDefaultExclusiveQueue() : exclusive,
+                 groupRebalance == null ? as.isDefaultGroupRebalance() : groupRebalance,
+                 groupBuckets == null ? as.getDefaultGroupBuckets() : groupBuckets,
+                 lastValue == null ? as.isDefaultLastValueQueue() : lastValue,
+                 lastValueKey == null ? as.getDefaultLastValueKey() : lastValueKey,
+                 nonDestructive == null ? as.isDefaultNonDestructive() : nonDestructive,
+                 consumersBeforeDispatch == null ? as.getDefaultConsumersBeforeDispatch() : consumersBeforeDispatch,
+                 delayBeforeDispatch == null ? as.getDefaultDelayBeforeDispatch() : delayBeforeDispatch,
+                 autoDelete == null ? ActiveMQServerImpl.isAutoDelete(autoCreated, as) : autoDelete,
+                 autoDeleteDelay == null ? as.getAutoDeleteQueuesDelay() : autoDeleteDelay,
+                 autoDeleteMessageCount == null ? as.getAutoDeleteQueuesMessageCount() : autoDeleteMessageCount,
+                 autoCreated);
       } else {
          return createQueue(new AddressInfo(address, routingType), name, filterString, temporary, durable, maxConsumers, purgeOnNoConsumers,
-                            exclusive, lastValue, autoCreated);
+                 exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch, delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount, autoCreated);
       }
    }
 
@@ -671,21 +775,26 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
    @Override
    public Queue createQueue(AddressInfo addressInfo, SimpleString name, SimpleString filterString, boolean temporary, boolean durable, boolean autoCreated) throws Exception {
       AddressSettings as = server.getAddressSettingsRepository().getMatch(addressInfo.getName().toString());
-      return createQueue(addressInfo, name, filterString, temporary, durable, as.getDefaultMaxConsumers(), as.isDefaultPurgeOnNoConsumers(), as.isDefaultExclusiveQueue(), as.isDefaultLastValueQueue(), autoCreated);
+      return createQueue(addressInfo, name, filterString, temporary, durable, as.getDefaultMaxConsumers(), as.isDefaultPurgeOnNoConsumers(), as.isDefaultExclusiveQueue(), as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), as.isDefaultLastValueQueue(), as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), ActiveMQServerImpl.isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreated);
    }
 
    @Override
    public Queue createQueue(AddressInfo addressInfo, SimpleString name, SimpleString filterString, boolean temporary, boolean durable, Boolean exclusive, Boolean lastValue, boolean autoCreated) throws Exception {
       AddressSettings as = server.getAddressSettingsRepository().getMatch(addressInfo.getName().toString());
       return createQueue(addressInfo, name, filterString, temporary, durable, as.getDefaultMaxConsumers(), as.isDefaultPurgeOnNoConsumers(),
-                         exclusive == null ? as.isDefaultExclusiveQueue() : exclusive, lastValue == null ? as.isDefaultLastValueQueue() : lastValue, autoCreated);
+                         exclusive == null ? as.isDefaultExclusiveQueue() : exclusive, as.isDefaultGroupRebalance(), as.getDefaultGroupBuckets(), lastValue == null ? as.isDefaultLastValueQueue() : lastValue, as.getDefaultLastValueKey(), as.isDefaultNonDestructive(), as.getDefaultConsumersBeforeDispatch(), as.getDefaultDelayBeforeDispatch(), ActiveMQServerImpl.isAutoDelete(autoCreated, as), as.getAutoDeleteQueuesDelay(), as.getAutoDeleteQueuesMessageCount(), autoCreated);
    }
 
    @Override
    public AddressInfo createAddress(final SimpleString address,
                                     EnumSet<RoutingType> routingTypes,
                                     final boolean autoCreated) throws Exception {
-      Pair<SimpleString, EnumSet<RoutingType>> art = getAddressAndRoutingTypes(address, routingTypes);
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.serverSessionCreateAddress(this.getName(), getUsername(), address, routingTypes, autoCreated);
+      }
+
+      SimpleString realAddress = CompositeAddress.extractAddressName(address);
+      Pair<SimpleString, EnumSet<RoutingType>> art = getAddressAndRoutingTypes(realAddress, routingTypes);
       securityCheck(art.getA(), CheckType.CREATE_ADDRESS, this);
       server.addOrUpdateAddressInfo(new AddressInfo(art.getA(), art.getB()).setAutoCreated(autoCreated));
       return server.getAddressInfo(art.getA());
@@ -700,6 +809,10 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
    @Override
    public AddressInfo createAddress(AddressInfo addressInfo, boolean autoCreated) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.serverSessionCreateAddress(this.getName(), getUsername(), addressInfo, autoCreated);
+      }
+
       AddressInfo art = getAddressAndRoutingType(addressInfo);
       securityCheck(art.getName(), CheckType.CREATE_ADDRESS, this);
       server.addOrUpdateAddressInfo(art.setAutoCreated(autoCreated));
@@ -716,6 +829,33 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                                  Boolean purgeOnNoConsumers,
                                  Boolean exclusive,
                                  Boolean lastValue) throws Exception {
+      createSharedQueue(address, name, routingType, filterString, durable, maxConsumers, purgeOnNoConsumers, exclusive, null, null, lastValue, null, null, null, null, null, null, null);
+   }
+
+   @Override
+   public void createSharedQueue(SimpleString address,
+                                 SimpleString name,
+                                 RoutingType routingType,
+                                 SimpleString filterString,
+                                 boolean durable,
+                                 Integer maxConsumers,
+                                 Boolean purgeOnNoConsumers,
+                                 Boolean exclusive,
+                                 Boolean groupRebalance,
+                                 Integer groupBuckets,
+                                 Boolean lastValue,
+                                 SimpleString lastValueKey,
+                                 Boolean nonDestructive,
+                                 Integer consumersBeforeDispatch,
+                                 Long delayBeforeDispatch,
+                                 Boolean autoDelete,
+                                 Long autoDeleteDelay,
+                                 Long autoDeleteMessageCount) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.createSharedQueue(this, getUsername(), address, name, routingType, filterString, durable, maxConsumers, purgeOnNoConsumers,
+                  exclusive, groupRebalance, groupBuckets, lastValue, lastValueKey, nonDestructive, consumersBeforeDispatch,
+                  delayBeforeDispatch, autoDelete, autoDeleteDelay, autoDeleteMessageCount);
+      }
       address = removePrefix(address);
 
       securityCheck(address, name, durable ? CheckType.CREATE_DURABLE_QUEUE : CheckType.CREATE_NON_DURABLE_QUEUE, this);
@@ -728,7 +868,16 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
                                maxConsumers == null ? as.getDefaultMaxConsumers() : maxConsumers,
                                purgeOnNoConsumers == null ? as.isDefaultPurgeOnNoConsumers() : purgeOnNoConsumers,
                                exclusive == null ? as.isDefaultExclusiveQueue() : exclusive,
-                               lastValue == null ? as.isDefaultLastValueQueue() : lastValue);
+                               groupRebalance == null ? as.isDefaultGroupRebalance() : groupRebalance,
+                               groupBuckets == null ? as.getDefaultGroupBuckets() : groupBuckets,
+                               lastValue == null ? as.isDefaultLastValueQueue() : lastValue,
+                               lastValueKey == null ? as.getDefaultLastValueKey() : lastValueKey,
+                               nonDestructive == null ? as.isDefaultNonDestructive() : nonDestructive,
+                               consumersBeforeDispatch == null ? as.getDefaultConsumersBeforeDispatch() : consumersBeforeDispatch,
+                               delayBeforeDispatch == null ? as.getDefaultDelayBeforeDispatch() : delayBeforeDispatch,
+                               autoDelete == null ? as.isAutoDeleteCreatedQueues() : autoDelete,
+                               autoDeleteDelay == null ? as.getAutoDeleteQueuesDelay() : delayBeforeDispatch,
+                               autoDeleteMessageCount == null ? as.getAutoDeleteQueuesMessageCount() : autoDeleteMessageCount);
    }
 
    @Override
@@ -815,6 +964,9 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
    @Override
    public void deleteQueue(final SimpleString queueToDelete) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.destroyQueue(this, getUsername(), queueToDelete);
+      }
       final SimpleString unPrefixedQueueName = removePrefix(queueToDelete);
 
       Binding binding = postOffice.getBinding(unPrefixedQueueName);
@@ -1394,86 +1546,84 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       return send(getCurrentTransaction(), message, direct, noAutoCreateQueue);
    }
 
-
-   private LargeServerMessage messageToLargeMessage(Message message) throws Exception {
-      ICoreMessage coreMessage = message.toCore();
-      LargeServerMessage lsm = getStorageManager().createLargeMessage(storageManager.generateID(), coreMessage);
-
-      ActiveMQBuffer buffer = coreMessage.getReadOnlyBodyBuffer();
-      byte[] body = new byte[buffer.readableBytes()];
-      buffer.readBytes(body);
-      lsm.addBytes(body);
-      lsm.releaseResources();
-      lsm.putLongProperty(Message.HDR_LARGE_BODY_SIZE, body.length);
-      return lsm;
-   }
-
-
    @Override
    public synchronized RoutingStatus send(Transaction tx,
                                           Message msg,
                                           final boolean direct,
                                           boolean noAutoCreateQueue) throws Exception {
+      return send(tx, msg, direct, noAutoCreateQueue, routingContext);
+   }
 
-      final Message message;
-      if ((msg.getEncodeSize() > storageManager.getMaxRecordSize()) && !msg.isLargeMessage()) {
-         message = messageToLargeMessage(msg);
-      } else {
-         message = msg;
+   @Override
+   public synchronized RoutingStatus send(Transaction tx,
+                                          Message messageParameter,
+                                          final boolean direct,
+                                          boolean noAutoCreateQueue,
+                                          RoutingContext routingContext) throws Exception {
+      if (AuditLogger.isMessageEnabled()) {
+         AuditLogger.coreSendMessage(this, getUsername(), tx, messageParameter, direct, noAutoCreateQueue, routingContext);
       }
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.beforeSend(this, tx, message, direct, noAutoCreateQueue));
-      }
+      final Message message = LargeServerMessageImpl.checkLargeMessage(messageParameter, storageManager);
 
-      // If the protocol doesn't support flow control, we have no choice other than fail the communication
-      if (!this.getRemotingConnection().isSupportsFlowControl() && pagingManager.isDiskFull()) {
-         ActiveMQIOErrorException exception = ActiveMQMessageBundle.BUNDLE.diskBeyondLimit();
-         this.getRemotingConnection().fail(exception);
-         throw exception;
+      if (server.hasBrokerMessagePlugins()) {
+         server.callBrokerMessagePlugins(plugin -> plugin.beforeSend(this, tx, message, direct, noAutoCreateQueue));
       }
 
       final RoutingStatus result;
-      //large message may come from StompSession directly, in which
-      //case the id header already generated.
-      if (!message.isLargeMessage()) {
-         long id = storageManager.generateID();
-         // This will re-encode the message
-         message.setMessageID(id);
+      try {
+         // If the protocol doesn't support flow control, we have no choice other than fail the communication
+         if (!this.getRemotingConnection().isSupportsFlowControl() && pagingManager.isDiskFull()) {
+            ActiveMQIOErrorException exception = ActiveMQMessageBundle.BUNDLE.diskBeyondLimit();
+            this.getRemotingConnection().fail(exception);
+            throw exception;
+         }
+
+         //large message may come from StompSession directly, in which
+         //case the id header already generated.
+         if (!message.isLargeMessage()) {
+            long id = storageManager.generateID();
+            // This will re-encode the message
+            message.setMessageID(id);
+         }
+
+         SimpleString address = message.getAddressSimpleString();
+
+         if (defaultAddress == null && address != null) {
+            defaultAddress = address;
+         }
+
+         if (address == null) {
+            // We don't want to force a re-encode when the message gets sent to the consumer
+            message.setAddress(defaultAddress);
+         }
+
+         if (logger.isTraceEnabled()) {
+            logger.trace("send(message=" + message + ", direct=" + direct + ") being called");
+         }
+
+         if (message.getAddress() == null) {
+            // This could happen with some tests that are ignoring messages
+            throw ActiveMQMessageBundle.BUNDLE.noAddress();
+         }
+
+         if (message.getAddressSimpleString().equals(managementAddress)) {
+            // It's a management message
+
+            result = handleManagementMessage(tx, message, direct);
+         } else {
+            result = doSend(tx, message, address, direct, noAutoCreateQueue, routingContext);
+         }
+
+      } catch (Exception e) {
+         if (server.hasBrokerMessagePlugins()) {
+            server.callBrokerMessagePlugins(plugin -> plugin.onSendException(this, tx, message, direct, noAutoCreateQueue, e));
+         }
+         throw e;
       }
-
-      SimpleString address = message.getAddressSimpleString();
-
-      if (defaultAddress == null && address != null) {
-         defaultAddress = address;
+      if (server.hasBrokerMessagePlugins()) {
+         server.callBrokerMessagePlugins(plugin -> plugin.afterSend(this, tx, message, direct, noAutoCreateQueue, result));
       }
-
-      if (address == null) {
-         // We don't want to force a re-encode when the message gets sent to the consumer
-         message.setAddress(defaultAddress);
-      }
-
-      if (logger.isTraceEnabled()) {
-         logger.trace("send(message=" + message + ", direct=" + direct + ") being called");
-      }
-
-      if (message.getAddress() == null) {
-         // This could happen with some tests that are ignoring messages
-         throw ActiveMQMessageBundle.BUNDLE.noAddress();
-      }
-
-      if (message.getAddressSimpleString().equals(managementAddress)) {
-         // It's a management message
-
-         result = handleManagementMessage(tx, message, direct);
-      } else {
-         result = doSend(tx, message, address, direct, noAutoCreateQueue);
-      }
-
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.afterSend(this, tx, message, direct, noAutoCreateQueue, result));
-      }
-
       return result;
    }
 
@@ -1483,7 +1633,9 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       final SimpleString addr = removePrefix(address);
       PagingStore store = server.getPagingManager().getPageStore(addr);
 
-      if (!store.checkMemory(new Runnable() {
+      if (store == null) {
+         callback.sendProducerCreditsMessage(credits, address);
+      } else if (!store.checkMemory(new Runnable() {
          @Override
          public void run() {
             callback.sendProducerCreditsMessage(credits, address);
@@ -1504,8 +1656,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
 
    @Override
    public void addMetaData(String key, String data) throws Exception {
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.beforeSessionMetadataAdded(this, key, data));
+      if (server.hasBrokerSessionPlugins()) {
+         server.callBrokerSessionPlugins(plugin -> plugin.beforeSessionMetadataAdded(this, key, data));
       }
 
       if (metaData == null) {
@@ -1513,8 +1665,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       }
       metaData.put(key, data);
 
-      if (server.hasBrokerPlugins()) {
-         server.callBrokerPlugins(plugin -> plugin.afterSessionMetadataAdded(this, key, data));
+      if (server.hasBrokerSessionPlugins()) {
+         server.callBrokerSessionPlugins(plugin -> plugin.afterSessionMetadataAdded(this, key, data));
       }
    }
 
@@ -1523,8 +1675,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       ServerSession sessionWithMetaData = server.lookupSession(key, data);
       if (sessionWithMetaData != null && sessionWithMetaData != this) {
          // There is a duplication of this property
-         if (server.hasBrokerPlugins()) {
-            server.callBrokerPlugins(plugin -> plugin.duplicateSessionMetadataFailure(this, key, data));
+         if (server.hasBrokerSessionPlugins()) {
+            server.callBrokerSessionPlugins(plugin -> plugin.duplicateSessionMetadataFailure(this, key, data));
          }
          return false;
       } else {
@@ -1540,10 +1692,6 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          data = metaData.get(key);
       }
 
-      if (key.equals(ClientSession.JMS_SESSION_CLIENT_ID_PROPERTY)) {
-         // we know it's a JMS Session, we now install JMS Hooks of any kind
-         installJMSHooks();
-      }
       return data;
    }
 
@@ -1664,9 +1812,6 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       connectionFailed(me, failedOver);
    }
 
-   private void installJMSHooks() {
-   }
-
    private Map<SimpleString, Pair<Object, AtomicLong>> cloneTargetAddresses() {
       return new HashMap<>(targetAddressInfos);
    }
@@ -1684,6 +1829,9 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
    private RoutingStatus handleManagementMessage(final Transaction tx,
                                                  final Message message,
                                                  final boolean direct) throws Exception {
+      if (AuditLogger.isEnabled()) {
+         AuditLogger.handleManagementMessage(this.getName(), getUsername(), tx, message, direct);
+      }
       try {
          securityCheck(removePrefix(message.getAddressSimpleString()), CheckType.MANAGE, this);
       } catch (ActiveMQException e) {
@@ -1706,9 +1854,8 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
          }
          reply.setAddress(replyTo);
 
-         doSend(tx, reply, null, direct, false);
+         doSend(tx, reply, null, direct, false, routingContext);
       }
-
       return RoutingStatus.OK;
    }
 
@@ -1763,12 +1910,24 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       theTx.rollback();
    }
 
+
    @Override
    public synchronized RoutingStatus doSend(final Transaction tx,
                                             final Message msg,
                                             final SimpleString originalAddress,
                                             final boolean direct,
                                             final boolean noAutoCreateQueue) throws Exception {
+      return doSend(tx, msg, originalAddress, direct, noAutoCreateQueue, routingContext);
+   }
+
+
+   @Override
+   public synchronized RoutingStatus doSend(final Transaction tx,
+                                            final Message msg,
+                                            final SimpleString originalAddress,
+                                            final boolean direct,
+                                            final boolean noAutoCreateQueue,
+                                            final RoutingContext routingContext) throws Exception {
 
       RoutingStatus result = RoutingStatus.OK;
 
@@ -1801,6 +1960,7 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
       }
 
       if (tx == null || autoCommitSends) {
+         routingContext.setTransaction(null);
       } else {
          routingContext.setTransaction(tx);
       }
@@ -1820,7 +1980,9 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
             value.getB().incrementAndGet();
          }
       } finally {
-         routingContext.clear();
+         if (!routingContext.isReusable()) {
+            routingContext.clear();
+         }
       }
       return result;
    }
@@ -1836,6 +1998,16 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
             return oper.getListOnConsumer(consumerId);
          }
       } else {
+         //amqp handles the transaction in callback
+         if (callback != null) {
+            Transaction transaction = callback.getCurrentTransaction();
+            if (transaction != null) {
+               RefsOperation operation = (RefsOperation) transaction.getProperty(TransactionPropertyIndexes.REFS_OPERATION);
+               if (operation != null) {
+                  return operation.getListOnConsumer(consumerId);
+               }
+            }
+         }
          return Collections.emptyList();
       }
    }
@@ -1903,5 +2075,11 @@ public class ServerSessionImpl implements ServerSession, FailureListener {
    @Override
    public int getProducerCount() {
       return getServerProducers().size();
+   }
+
+   @Override
+   public int getDefaultConsumerWindowSize(SimpleString address) {
+      AddressSettings as = server.getAddressSettingsRepository().getMatch(address.toString());
+      return as.getDefaultConsumerWindowSize();
    }
 }
