@@ -68,7 +68,7 @@ import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQCompatibleMes
 import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQMapCompatibleMessage;
 import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQObjectCompatibleMessage;
 import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQStreamCompatibleMessage;
-import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQTextCompabileMessage;
+import org.apache.activemq.artemis.jms.client.compatible1X.ActiveMQTextCompatibleMessage;
 import org.apache.activemq.artemis.selector.filter.FilterException;
 import org.apache.activemq.artemis.selector.impl.SelectorParser;
 import org.apache.activemq.artemis.utils.CompositeAddress;
@@ -234,7 +234,7 @@ public class ActiveMQSession implements QueueSession, TopicSession {
 
       ActiveMQTextMessage msg;
       if (enable1xPrefixes) {
-         msg = new ActiveMQTextCompabileMessage(session);
+         msg = new ActiveMQTextCompatibleMessage(session);
       } else {
          msg = new ActiveMQTextMessage(session);
       }
@@ -249,7 +249,7 @@ public class ActiveMQSession implements QueueSession, TopicSession {
 
       ActiveMQTextMessage msg;
       if (enable1xPrefixes) {
-         msg = new ActiveMQTextCompabileMessage(session);
+         msg = new ActiveMQTextCompatibleMessage(session);
       } else {
          msg = new ActiveMQTextMessage(session);
       }
@@ -799,7 +799,7 @@ public class ActiveMQSession implements QueueSession, TopicSession {
              * Therefore, we must check if the queue names list contains the exact name of the address to know whether or
              * not a LOCAL binding for the address exists. If no LOCAL binding exists then it should be created here.
              */
-            if (!response.isExists() || !response.getQueueNames().contains(CompositeAddress.extractQueueName(dest.getSimpleAddress()))) {
+            if (!response.isExists() || !response.getQueueNames().contains(getCoreQueueName(dest))) {
                if (response.isAutoCreateQueues()) {
                   try {
                      createQueue(dest, RoutingType.ANYCAST, dest.getSimpleAddress(), null, true, true, response);
@@ -904,6 +904,14 @@ public class ActiveMQSession implements QueueSession, TopicSession {
          return jbc;
       } catch (ActiveMQException e) {
          throw JMSExceptionHelper.convertFromActiveMQException(e);
+      }
+   }
+
+   private SimpleString getCoreQueueName(ActiveMQDestination dest) {
+      if (session.getVersion() < PacketImpl.FQQN_CHANGE_VERSION) {
+         return dest.getSimpleAddress();
+      } else {
+         return CompositeAddress.extractQueueName(dest.getSimpleAddress());
       }
    }
 
@@ -1288,6 +1296,10 @@ public class ActiveMQSession implements QueueSession, TopicSession {
          queue = ActiveMQDestination.createQueue(queueNameToUse);
       }
 
+      if (queueName != queueNameToUse) {
+         queue.setName(queueName);
+      }
+
       QueueQuery response = session.queueQuery(queue.getSimpleAddress());
 
       if (!response.isExists() && !response.isAutoCreateQueues()) {
@@ -1310,6 +1322,11 @@ public class ActiveMQSession implements QueueSession, TopicSession {
       } else {
          topic = ActiveMQDestination.createTopic(topicNameToUse);
       }
+
+      if (topicNameToUse != topicName) {
+         topic.setName(topicName);
+      }
+
 
       AddressQuery query = session.addressQuery(topic.getSimpleAddress());
 

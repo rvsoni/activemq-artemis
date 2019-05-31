@@ -27,7 +27,6 @@ import java.sql.Statement;
 import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.Executor;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.apache.activemq.artemis.jdbc.store.logging.LoggingConnection;
@@ -57,13 +56,19 @@ public abstract class AbstractJDBCDriver {
 
    private int networkTimeoutMillis;
 
+   private String user;
+
+   private String password;
+
    public AbstractJDBCDriver() {
       this.networkTimeoutExecutor = null;
       this.networkTimeoutMillis = -1;
    }
 
-   public AbstractJDBCDriver(SQLProvider sqlProvider, String jdbcConnectionUrl, String jdbcDriverClass) {
+   public AbstractJDBCDriver(SQLProvider sqlProvider, String jdbcConnectionUrl, String user, String password, String jdbcDriverClass) {
       this.jdbcConnectionUrl = jdbcConnectionUrl;
+      this.user = user;
+      this.password = password;
       this.jdbcDriverClass = jdbcDriverClass;
       this.sqlProvider = sqlProvider;
       this.networkTimeoutExecutor = null;
@@ -141,7 +146,12 @@ public abstract class AbstractJDBCDriver {
                   throw new IllegalStateException("jdbcConnectionUrl is null or empty!");
                }
                final Driver dbDriver = getDriver(jdbcDriverClass);
-               connection = dbDriver.connect(jdbcConnectionUrl, new Properties());
+               Properties properties = new Properties();
+               if (user != null) {
+                  properties.setProperty("user", user);
+                  properties.setProperty("password", password);
+               }
+               connection = dbDriver.connect(jdbcConnectionUrl, properties);
 
                if (logger.isTraceEnabled() && !(connection instanceof LoggingConnection)) {
                   this.connection = new LoggingConnection(connection, logger);
@@ -271,7 +281,7 @@ public abstract class AbstractJDBCDriver {
             connection.commit();
          }
       } catch (SQLException e) {
-         final String sqlStatements = Stream.of(sqls).collect(Collectors.joining("\n"));
+         final String sqlStatements = String.join("\n", sqls);
          logger.error(JDBCUtils.appendSQLExceptionDetails(new StringBuilder(), e, sqlStatements));
          try {
             connection.rollback();
@@ -327,6 +337,22 @@ public abstract class AbstractJDBCDriver {
 
    public void setJdbcConnectionUrl(String jdbcConnectionUrl) {
       this.jdbcConnectionUrl = jdbcConnectionUrl;
+   }
+
+   public String getUser() {
+      return user;
+   }
+
+   public void setUser(String user) {
+      this.user = user;
+   }
+
+   public String getPassword() {
+      return password;
+   }
+
+   public void setPassword(String password) {
+      this.password = password;
    }
 
    public void setJdbcDriverClass(String jdbcDriverClass) {

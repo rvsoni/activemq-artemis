@@ -20,7 +20,7 @@
    <groupId>org.apache.activemq</groupId>
    <artifactId>artemis-pom</artifactId>
    <packaging>pom</packaging>
-   <version>2.8.0-SNAPSHOT</version>
+   <version>2.10.0-SNAPSHOT</version>
 
    <parent>
       <groupId>org.apache</groupId>
@@ -84,25 +84,26 @@
       <commons.beanutils.version>1.9.3</commons.beanutils.version>
       <commons.collections.version>3.2.2</commons.collections.version>
       <fuse.mqtt.client.version>1.14</fuse.mqtt.client.version>
-      <guava.version>19.0</guava.version>
-      <jboss.logging.version>3.3.1.Final</jboss.logging.version>
+      <guava.version>24.1-jre</guava.version>
+      <jboss.logging.version>3.4.0.Final</jboss.logging.version>
       <jetty.version>9.4.3.v20170317</jetty.version>
       <jgroups.version>3.6.13.Final</jgroups.version>
       <maven.assembly.plugin.version>2.4</maven.assembly.plugin.version>
       <mockito.version>2.8.47</mockito.version>
       <netty.version>4.1.34.Final</netty.version>
       <netty-tcnative-version>2.0.22.Final</netty-tcnative-version>
-      <proton.version>0.31.0</proton.version>
+      <proton.version>0.33.0</proton.version>
       <resteasy.version>3.0.19.Final</resteasy.version>
       <slf4j.version>1.7.21</slf4j.version>
-      <qpid.jms.version>0.39.0</qpid.jms.version>
+      <qpid.jms.version>0.42.0</qpid.jms.version>
       <johnzon.version>0.9.5</johnzon.version>
       <json-p.spec.version>1.0-alpha-1</json-p.spec.version>
       <javax.inject.version>1</javax.inject.version>
       <hawtbuff.version>1.11</hawtbuff.version>
-      <jb.logmanager.version>2.0.3.Final</jb.logmanager.version>
+      <jb.logmanager.version>2.1.10.Final</jb.logmanager.version>
       <jb.slf4j-jboss-logmanager.version>1.0.4.GA</jb.slf4j-jboss-logmanager.version>
-      <airlift.version>0.7</airlift.version>
+       <version.org.wildfly.common.wildfly-common>1.5.1.Final</version.org.wildfly.common.wildfly-common>
+      <airlift.version>0.8</airlift.version>
       <geronimo.annotation.1.1.spec.version>1.0.1</geronimo.annotation.1.1.spec.version>
       <geronimo.ejb.3.0.spec.version>1.0.1</geronimo.ejb.3.0.spec.version>
       <geronimo.jta.1.1.spec.version>1.1.1</geronimo.jta.1.1.spec.version>
@@ -115,6 +116,7 @@
       <version.org.jacoco>0.7.9</version.org.jacoco>
       <version.org.jacoco.plugin>0.7.9</version.org.jacoco.plugin>
       <version.maven.jar.plugin>2.4</version.maven.jar.plugin>
+      <version.micrometer>1.1.4</version.micrometer>
 
       <!-- used on tests -->
       <groovy.version>2.4.3</groovy.version>
@@ -313,14 +315,14 @@
          <dependency>
             <groupId>org.jboss.logging</groupId>
             <artifactId>jboss-logging-processor</artifactId>
-            <version>2.1.0.Final</version>
+            <version>2.2.0.Final</version>
             <optional>true</optional>
             <!-- License: LGPL-->
          </dependency>
          <dependency>
             <groupId>org.jboss.logging</groupId>
             <artifactId>jboss-logging-annotations</artifactId>
-            <version>2.1.0.Final</version>
+            <version>2.2.0.Final</version>
             <scope>provided</scope>
             <optional>true</optional>
             <!-- License: Apache 2.0-->
@@ -405,6 +407,12 @@
             <artifactId>slf4j-jboss-logmanager</artifactId>
             <version>${jb.slf4j-jboss-logmanager.version}</version>
             <!-- License: Apache 2.0 -->
+         </dependency>
+         <dependency>
+             <groupId>org.wildfly.common</groupId>
+             <artifactId>wildfly-common</artifactId>
+             <version>${version.org.wildfly.common.wildfly-common}</version>
+             <!-- License: Apache 2.0 -->
          </dependency>
          <dependency>
             <groupId>net.java.dev.javacc</groupId>
@@ -696,6 +704,15 @@
             <version>2.7.2</version>
          </dependency>
 
+         <!-- Needed for Micrometer -->
+         <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${version.micrometer}</version>
+            <optional>true</optional> <!-- keep optional as "true" at least until micrometer supports OSGi -->
+            <!-- license Apache 2 -->
+         </dependency>
+
          <dependency>
             <groupId>org.apache.openwebbeans</groupId>
             <artifactId>openwebbeans-impl</artifactId>
@@ -781,6 +798,12 @@
             <artifactId>osgi.cmpn</artifactId>
             <version>6.0.0</version>
             <scope>provided</scope>
+            <!-- License: Apache 2.0 -->
+         </dependency>
+         <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
             <!-- License: Apache 2.0 -->
          </dependency>
       </dependencies>
@@ -1624,6 +1647,8 @@
                   <exclude>activemq-artemis-native/src/main/c/org_apache_activemq_artemis_jlibaio_LibaioContext.h</exclude>
                   <exclude>**/dependency-reduced-pom.xml</exclude>
 
+                  <!-- Mockito -->
+                  <exclude>**/src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker</exclude>
                </excludes>
             </configuration>
             <executions>

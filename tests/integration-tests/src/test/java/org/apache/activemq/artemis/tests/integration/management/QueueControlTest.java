@@ -16,8 +16,13 @@
  */
 package org.apache.activemq.artemis.tests.integration.management;
 
-import static org.apache.activemq.artemis.core.management.impl.openmbean.CompositeDataConstants.BODY;
-
+import javax.json.JsonArray;
+import javax.json.JsonObject;
+import javax.management.Notification;
+import javax.management.openmbean.CompositeData;
+import javax.management.openmbean.CompositeDataSupport;
+import javax.management.openmbean.TabularDataSupport;
+import javax.transaction.xa.XAResource;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -31,11 +36,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
-
-import javax.json.JsonArray;
-import javax.json.JsonObject;
-import javax.management.Notification;
-import javax.management.openmbean.CompositeData;
 
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
@@ -66,6 +66,7 @@ import org.apache.activemq.artemis.core.server.ActiveMQServers;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.impl.QueueImpl;
 import org.apache.activemq.artemis.core.settings.impl.AddressSettings;
+import org.apache.activemq.artemis.core.transaction.impl.XidImpl;
 import org.apache.activemq.artemis.junit.Wait;
 import org.apache.activemq.artemis.tests.integration.jms.server.management.JMSUtil;
 import org.apache.activemq.artemis.utils.Base64;
@@ -75,6 +76,9 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+
+import static org.apache.activemq.artemis.core.management.impl.openmbean.CompositeDataConstants.BODY;
+import static org.apache.activemq.artemis.core.management.impl.openmbean.CompositeDataConstants.STRING_PROPERTIES;
 
 @RunWith(value = Parameterized.class)
 public class QueueControlTest extends ManagementTestBase {
@@ -366,6 +370,92 @@ public class QueueControlTest extends ManagementTestBase {
       //      ManagementTestBase.consumeMessages(2, session, queue);
 
       //      Assert.assertEquals(2, getMessagesAdded(queueControl));
+
+      session.deleteQueue(queue);
+   }
+
+   @Test
+   public void testGetMessagesAcknowledgedOnXARollback() throws Exception {
+      SimpleString address = RandomUtil.randomSimpleString();
+      SimpleString queue = RandomUtil.randomSimpleString();
+
+      session.createQueue(address, RoutingType.MULTICAST, queue, null, durable);
+
+      QueueControl queueControl = createManagementControl(address, queue);
+      Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+
+      ClientProducer producer = session.createProducer(address);
+      producer.send(session.createMessage(durable));
+
+      ClientSessionFactory xaFactory = createSessionFactory(locator);
+      ClientSession xaSession = addClientSession(xaFactory.createSession(true, false, false));
+      xaSession.start();
+
+      ClientConsumer consumer = xaSession.createConsumer(queue);
+
+      int tries = 10;
+      for (int i = 0; i < tries; i++) {
+         XidImpl xid = newXID();
+         xaSession.start(xid, XAResource.TMNOFLAGS);
+         ClientMessage message = consumer.receive(1000);
+         Assert.assertNotNull(message);
+         message.acknowledge();
+         Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+         xaSession.end(xid, XAResource.TMSUCCESS);
+         Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+         xaSession.prepare(xid);
+         Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+         if (i + 1 == tries) {
+            xaSession.commit(xid, false);
+         } else {
+            xaSession.rollback(xid);
+         }
+      }
+
+      Wait.assertEquals(1, queueControl::getMessagesAcknowledged);
+      Wait.assertEquals(10, queueControl::getAcknowledgeAttempts);
+
+      consumer.close();
+
+      session.deleteQueue(queue);
+   }
+
+   @Test
+   public void testGetMessagesAcknowledgedOnRegularRollback() throws Exception {
+      SimpleString address = RandomUtil.randomSimpleString();
+      SimpleString queue = RandomUtil.randomSimpleString();
+
+      session.createQueue(address, RoutingType.MULTICAST, queue, null, durable);
+
+      QueueControl queueControl = createManagementControl(address, queue);
+      Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+
+      ClientProducer producer = session.createProducer(address);
+      producer.send(session.createMessage(durable));
+
+      ClientSessionFactory xaFactory = createSessionFactory(locator);
+      ClientSession txSession = addClientSession(xaFactory.createSession(false, false, false));
+      txSession.start();
+
+      ClientConsumer consumer = txSession.createConsumer(queue);
+
+      int tries = 10;
+      for (int i = 0; i < tries; i++) {
+         ClientMessage message = consumer.receive(1000);
+         Assert.assertNotNull(message);
+         message.acknowledge();
+         Assert.assertEquals(0, queueControl.getMessagesAcknowledged());
+         if (i + 1 == tries) {
+            txSession.commit();
+         } else {
+            txSession.rollback();
+         }
+      }
+
+      Wait.assertEquals(1, queueControl::getMessagesAcknowledged);
+      Wait.assertEquals(10, queueControl::getAcknowledgeAttempts);
+
+      consumer.close();
 
       session.deleteQueue(queue);
    }
@@ -2802,6 +2892,47 @@ public class QueueControlTest extends ManagementTestBase {
       Assert.assertEquals(2, browse.length);
 
       byte[] body = (byte[]) browse[0].get(BODY);
+
+      Assert.assertNotNull(body);
+
+      Assert.assertEquals(new String(body), "theBody");
+
+      body = (byte[]) browse[1].get(BODY);
+
+      Assert.assertNotNull(body);
+
+      Assert.assertEquals(new String(body), "theBody");
+   }
+
+   @Test
+   public void testSendMessageWithProperties() throws Exception {
+      SimpleString address = RandomUtil.randomSimpleString();
+      SimpleString queue = RandomUtil.randomSimpleString();
+
+      session.createQueue(address, RoutingType.MULTICAST, queue, null, durable);
+
+      QueueControl queueControl = createManagementControl(address, queue);
+
+      Map<String, String> headers = new HashMap<>();
+      headers.put("myProp1", "myValue1");
+      headers.put("myProp2", "myValue2");
+      queueControl.sendMessage(headers, Message.BYTES_TYPE, Base64.encodeBytes("theBody".getBytes()), true, "myUser", "myPassword");
+      queueControl.sendMessage(null, Message.BYTES_TYPE, Base64.encodeBytes("theBody".getBytes()), true, "myUser", "myPassword");
+
+      Wait.assertEquals(2, () -> getMessageCount(queueControl));
+
+      // the message IDs are set on the server
+      CompositeData[] browse = queueControl.browse(null);
+
+      Assert.assertEquals(2, browse.length);
+
+      byte[] body = (byte[]) browse[0].get(BODY);
+
+      for (Object prop : ((TabularDataSupport)browse[0].get(STRING_PROPERTIES)).values()) {
+         CompositeDataSupport cds = (CompositeDataSupport) prop;
+         Assert.assertTrue(headers.containsKey(cds.get("key")));
+         Assert.assertTrue(headers.containsValue(cds.get("value")));
+      }
 
       Assert.assertNotNull(body);
 

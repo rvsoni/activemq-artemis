@@ -18,7 +18,7 @@
    <security-setting match="a1">
       <permission type="createNonDurableQueue" roles="a1.1"/>
    </security-setting>
-   <security-setting match="a2">
+   <security-setting match="${a2Prop}">
       <permission type="deleteNonDurableQueue" roles="a2.1"/>
    </security-setting>
 </security-settings>

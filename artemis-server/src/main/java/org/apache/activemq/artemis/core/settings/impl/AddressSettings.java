@@ -145,6 +145,8 @@ public class AddressSettings implements Mergeable<AddressSettings>, Serializable
 
    private Integer defaultGroupBuckets = null;
 
+   private SimpleString defaultGroupFirstKey = null;
+
    private Long redistributionDelay = null;
 
    private Boolean sendToDLAOnNoRoute = null;
@@ -257,6 +259,7 @@ public class AddressSettings implements Mergeable<AddressSettings>, Serializable
       this.defaultConsumerWindowSize = other.defaultConsumerWindowSize;
       this.defaultGroupRebalance = other.defaultGroupRebalance;
       this.defaultGroupBuckets = other.defaultGroupBuckets;
+      this.defaultGroupFirstKey = other.defaultGroupFirstKey;
    }
 
    public AddressSettings() {
@@ -708,6 +711,21 @@ public class AddressSettings implements Mergeable<AddressSettings>, Serializable
    }
 
    /**
+    * @return the defaultGroupFirstKey
+    */
+   public SimpleString getDefaultGroupFirstKey() {
+      return defaultGroupFirstKey != null ? defaultGroupFirstKey : ActiveMQDefaultConfiguration.getDefaultGroupFirstKey();
+   }
+
+   /**
+    * @param defaultGroupFirstKey the defaultGroupFirstKey to set
+    */
+   public AddressSettings setDefaultGroupFirstKey(SimpleString defaultGroupFirstKey) {
+      this.defaultGroupFirstKey = defaultGroupFirstKey;
+      return this;
+   }
+
+   /**
     * @param defaultGroupBuckets the defaultGroupBuckets to set
     */
    public AddressSettings setDefaultGroupBuckets(int defaultGroupBuckets) {
@@ -1070,7 +1088,7 @@ public class AddressSettings implements Mergeable<AddressSettings>, Serializable
          BufferHelper.sizeOfNullableBoolean(defaultGroupRebalance) +
          BufferHelper.sizeOfNullableInteger(defaultGroupBuckets) +
          BufferHelper.sizeOfNullableLong(autoDeleteQueuesMessageCount) +
-         BufferHelper.sizeOfNullableBoolean(autoDeleteQueues);
+         BufferHelper.sizeOfNullableBoolean(autoDeleteCreatedQueues);
    }
 
    @Override

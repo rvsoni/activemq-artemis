@@ -63,6 +63,16 @@ public abstract class VersionedBase extends ClasspathBase {
                                                Object[] sideRight) {
       LinkedList<Object[]> combinations = new LinkedList<>();
 
+      addCombinations(combinations, required, rootSide, sideLeft, sideRight);
+
+      return combinations;
+   }
+
+   protected static void addCombinations(List<Object[]> combinations,
+                                       Object required,
+                                       Object[] rootSide,
+                                       Object[] sideLeft,
+                                       Object[] sideRight) {
       for (Object root : rootSide) {
          for (Object left : sideLeft) {
             for (Object right : sideRight) {
@@ -72,8 +82,6 @@ public abstract class VersionedBase extends ClasspathBase {
             }
          }
       }
-
-      return combinations;
    }
 
    public void startServer(File folder, ClassLoader loader, String serverName) throws Throwable {
@@ -101,12 +109,7 @@ public abstract class VersionedBase extends ClasspathBase {
          scriptToUse = "servers/hornetqServer.groovy";
       }
 
-      setVariable(loader, "setAddressSettings", setAddressSettings);
-      evaluate(loader, scriptToUse, folder.getAbsolutePath(), serverName, server, sender, receiver, globalMaxSize);
-   }
-
-   public void stopServer(ClassLoader loader) throws Throwable {
-      execute(loader, "server.stop()");
+      startServer(folder, loader, serverName, globalMaxSize, setAddressSettings, scriptToUse, server, sender, receiver);
    }
 
    public String getServerScriptToUse() {

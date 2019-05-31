@@ -29,12 +29,6 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
-import org.apache.activemq.artemis.core.journal.impl.JournalImpl;
-import org.apache.activemq.artemis.core.server.impl.ActiveMQServerImpl;
-import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
-import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBasePlugin;
-import org.apache.activemq.artemis.utils.RandomUtil;
-import org.apache.activemq.artemis.utils.critical.CriticalAnalyzerPolicy;
 import org.apache.activemq.artemis.api.core.BroadcastGroupConfiguration;
 import org.apache.activemq.artemis.api.core.DiscoveryGroupConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
@@ -50,19 +44,45 @@ import org.apache.activemq.artemis.core.config.DivertConfiguration;
 import org.apache.activemq.artemis.core.config.FileDeploymentManager;
 import org.apache.activemq.artemis.core.config.HAPolicyConfiguration;
 import org.apache.activemq.artemis.core.config.ha.LiveOnlyPolicyConfiguration;
+import org.apache.activemq.artemis.core.journal.impl.JournalImpl;
 import org.apache.activemq.artemis.core.remoting.impl.netty.TransportConstants;
 import org.apache.activemq.artemis.core.security.Role;
+import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.core.server.JournalType;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.SecuritySettingPlugin;
 import org.apache.activemq.artemis.core.server.cluster.impl.MessageLoadBalancingType;
+import org.apache.activemq.artemis.core.server.impl.ActiveMQServerImpl;
 import org.apache.activemq.artemis.core.server.impl.LegacyLDAPSecuritySettingPlugin;
+import org.apache.activemq.artemis.core.server.metrics.ActiveMQMetricsPlugin;
+import org.apache.activemq.artemis.core.server.metrics.plugins.SimpleMetricsPlugin;
+import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBasePlugin;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerPlugin;
 import org.apache.activemq.artemis.core.settings.impl.SlowConsumerPolicy;
+import org.apache.activemq.artemis.utils.RandomUtil;
+import org.apache.activemq.artemis.utils.critical.CriticalAnalyzerPolicy;
+import org.junit.AfterClass;
 import org.junit.Assert;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class FileConfigurationTest extends ConfigurationImplTest {
+
+   @BeforeClass
+   public static void setupProperties() {
+      System.setProperty("a2Prop", "a2");
+      System.setProperty("falseProp", "false");
+      System.setProperty("trueProp", "true");
+      System.setProperty("ninetyTwoProp", "92");
+   }
+
+   @AfterClass
+   public static void clearProperties() {
+      System.clearProperty("a2Prop");
+      System.clearProperty("falseProp");
+      System.clearProperty("trueProp");
+      System.clearProperty("ninetyTwoProp");
+   }
 
    protected String getConfigurationName() {
       return "ConfigurationTest-full-config.xml";
@@ -121,6 +141,7 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       Assert.assertEquals(true, conf.isGracefulShutdownEnabled());
       Assert.assertEquals(12345, conf.getGracefulShutdownTimeout());
       Assert.assertEquals(true, conf.isPopulateValidatedUser());
+      Assert.assertEquals(false, conf.isRejectEmptyValidatedUser());
       Assert.assertEquals(98765, conf.getConnectionTtlCheckInterval());
       Assert.assertEquals(1234567, conf.getConfigurationFileRefreshPeriod());
 
@@ -415,6 +436,13 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       assertEquals(CriticalAnalyzerPolicy.HALT, conf.getCriticalAnalyzerPolicy());
 
       assertEquals(false, conf.isJournalDatasync());
+
+      ActiveMQMetricsPlugin metricsPlugin = conf.getMetricsPlugin();
+      assertTrue(metricsPlugin instanceof SimpleMetricsPlugin);
+      Map<String, String> options = ((SimpleMetricsPlugin) metricsPlugin).getOptions();
+      assertEquals("x", options.get("foo"));
+      assertEquals("y", options.get("bar"));
+      assertEquals("z", options.get("baz"));
    }
 
    private void verifyAddresses() {
@@ -524,61 +552,35 @@ public class FileConfigurationTest extends ConfigurationImplTest {
       Set<Role> roles = securityRoles.get("#");
 
       //cn=mygroup,dc=local,dc=com = amq1
-      Role testRole1 = new Role("cn=mygroup,dc=local,dc=com",false, false, false,
-                               false, true, false, false,
-                               false, false, false);
+      Role testRole1 = new Role("cn=mygroup,dc=local,dc=com", false, false, false, false, true, false, false, false, false, false);
 
       //myrole1 = amq1 + amq2
-      Role testRole2 = new Role("myrole1",false, false, false,
-                                false, true, true, false,
-                                false, false, false);
+      Role testRole2 = new Role("myrole1", false, false, false, false, true, true, false, false, false, false);
 
       //myrole3 = amq3 + amq4
-      Role testRole3 = new Role("myrole3",false, false, true,
-                                true, false, false, false,
-                                false, false, false);
+      Role testRole3 = new Role("myrole3", false, false, true, true, false, false, false, false, false, false);
 
       //myrole4 = amq5 + amq!@#$%^&*() + amq6
-      Role testRole4 = new Role("myrole4",true, true, false,
-                                false, false, false, false,
-                                true, true, true);
+      Role testRole4 = new Role("myrole4", true, true, false, false, false, false, false, true, true, true);
 
       //myrole5 = amq4 = amq3 + amq4
-      Role testRole5 = new Role("myrole5",false, false, true,
-                                true, false, false, false,
-                                false, false, false);
+      Role testRole5 = new Role("myrole5", false, false, true, true, false, false, false, false, false, false);
 
-      Role testRole6 = new Role("amq1",false, false, false,
-                                false, true, false, false,
-                                false, false, false);
+      Role testRole6 = new Role("amq1", false, false, false, false, true, false, false, false, false, false);
 
-      Role testRole7 = new Role("amq2",false, false, false,
-                                false, false, true, false,
-                                false, false, false);
+      Role testRole7 = new Role("amq2", false, false, false, false, false, true, false, false, false, false);
 
-      Role testRole8 = new Role("amq3",false, false, true,
-                                false, false, false, false,
-                                false, false, false);
+      Role testRole8 = new Role("amq3", false, false, true, false, false, false, false, false, false, false);
 
-      Role testRole9 = new Role("amq4",false, false, true,
-                                true, false, false, false,
-                                false, false, false);
+      Role testRole9 = new Role("amq4", false, false, true, true, false, false, false, false, false, false);
 
-      Role testRole10 = new Role("amq5",false, false, false,
-                                false, false, false, false,
-                                false, true, true);
+      Role testRole10 = new Role("amq5", false, false, false, false, false, false, false, false, true, true);
 
-      Role testRole11 = new Role("amq6",false, true, false,
-                                false, false, false, false,
-                                true, false, false);
+      Role testRole11 = new Role("amq6", false, true, false, false, false, false, false, true, false, false);
 
-      Role testRole12 = new Role("amq7",false, false, false,
-                                false, false, false, true,
-                                false, false, false);
+      Role testRole12 = new Role("amq7", false, false, false, false, false, false, true, false, false, false);
 
-      Role testRole13 = new Role("amq!@#$%^&*()",true, false, false,
-                                false, false, false, false,
-                                false, false, false);
+      Role testRole13 = new Role("amq!@#$%^&*()", true, false, false, false, false, false, false, false, false, false);
 
       assertEquals(13, roles.size());
       assertTrue(roles.contains(testRole1));

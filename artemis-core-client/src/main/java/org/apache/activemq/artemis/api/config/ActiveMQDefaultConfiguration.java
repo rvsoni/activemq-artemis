@@ -421,6 +421,9 @@ public final class ActiveMQDefaultConfiguration {
    // Will the broker populate the message with the name of the validated user
    private static boolean DEFAULT_POPULATE_VALIDATED_USER = false;
 
+   // Will the broker allow messages with no validated user
+   private static boolean DEFAULT_REJECT_EMPTY_VALIDATED_USER = false;
+
    // its possible that you only want a server to partake in scale down as a receiver, via a group. In this case set scale-down to false
    private static boolean DEFAULT_SCALE_DOWN_ENABLED = true;
 
@@ -522,6 +525,8 @@ public final class ActiveMQDefaultConfiguration {
    public static final int DEFAULT_GROUP_BUCKETS = -1;
 
    public static final boolean DEFAULT_GROUP_REBALANCE = false;
+
+   public static final SimpleString DEFAULT_GROUP_FIRST_KEY = null;
 
    public static final RoutingType DEFAULT_ROUTING_TYPE = RoutingType.MULTICAST;
 
@@ -1250,6 +1255,10 @@ public final class ActiveMQDefaultConfiguration {
       return DEFAULT_POPULATE_VALIDATED_USER;
    }
 
+   public static boolean isDefaultRejectEmptyValidatedUser() {
+      return DEFAULT_REJECT_EMPTY_VALIDATED_USER;
+   }
+
    /**
     * its possible that you only want a server to partake in scale down as a receiver, via a group. In this case set scale-down to false
     */
@@ -1428,6 +1437,10 @@ public final class ActiveMQDefaultConfiguration {
 
    public static boolean getDefaultGroupRebalance() {
       return DEFAULT_GROUP_REBALANCE;
+   }
+
+   public static SimpleString getDefaultGroupFirstKey() {
+      return DEFAULT_GROUP_FIRST_KEY;
    }
 
    public static String getInternalNamingPrefix() {
